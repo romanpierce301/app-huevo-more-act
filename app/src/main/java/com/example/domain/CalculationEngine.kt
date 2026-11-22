@@ -4,6 +4,9 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
 import java.util.Locale
 
 enum class DeliveryModality(val dbValue: String, val label: String) {
@@ -56,6 +59,11 @@ data class DeliveryCalculationResult(
     val finalAmountMxn: BigDecimal,
     val roundingDiffMxn: BigDecimal,
     val isValid: Boolean,
+)
+
+data class CreditLegendSegment(
+    val text: String,
+    val bold: Boolean = false,
 )
 
 object CalculationEngine {
@@ -409,6 +417,67 @@ object CalculationEngine {
     fun formatPlainDecimal(value: Double): String {
         if (!value.isFinite() || value <= 0.0) return ""
         return BigDecimal.valueOf(value).stripTrailingZeros().toPlainString()
+    }
+
+    fun computeCreditDueDateMillis(deliveryDateMillis: Long, termDays: Int): Long {
+        val safeDays = termDays.coerceIn(0, 3650)
+        return Calendar.getInstance().apply {
+            timeInMillis = deliveryDateMillis
+            add(Calendar.DAY_OF_YEAR, safeDays)
+        }.timeInMillis
+    }
+
+    fun formatCreditDueDate(deliveryDateMillis: Long, termDays: Int): String {
+        val dueMillis = computeCreditDueDateMillis(deliveryDateMillis, termDays)
+        val fmt = SimpleDateFormat("dd 'de' MMMM, yyyy", Locale("es", "MX"))
+        return fmt.format(Date(dueMillis))
+    }
+
+    fun buildPendingCreditLegendSegments(
+        deliveryDateMillis: Long,
+        pendingBalanceMxn: Double,
+        totalDebtMxn: Double,
+        effectiveTermDays: Int,
+        moratoriumInterestPercent: Double = 0.0,
+        paymentPlace: String = "",
+        extraCondition: String = "",
+        closingNote: String = "Válido con firma digital.",
+    ): List<CreditLegendSegment> {
+        val safeDays = effectiveTermDays.coerceIn(0, 3650)
+        val dueDateText = formatCreditDueDate(deliveryDateMillis, safeDays)
+        val segments = mutableListOf(
+            CreditLegendSegment("Recibí mercancía a entera satisfacción y reconozco el saldo pendiente de "),
+            CreditLegendSegment("${formatMoney(pendingBalanceMxn)} MXN", bold = true),
+            CreditLegendSegment(" (total adeudado: "),
+            CreditLegendSegment("${formatMoney(totalDebtMxn)} MXN", bold = true),
+        )
+        if (safeDays == 0) {
+            segments += CreditLegendSegment("), a liquidar el mismo día ")
+            segments += CreditLegendSegment(dueDateText, bold = true)
+        } else {
+            val dayLabel = if (safeDays == 1) "1 día" else "$safeDays días"
+            segments += CreditLegendSegment("), a pagar a más tardar el ")
+            segments += CreditLegendSegment(dueDateText, bold = true)
+            segments += CreditLegendSegment(" (plazo: $dayLabel)")
+        }
+        if (moratoriumInterestPercent.isFinite() && moratoriumInterestPercent > 0.0) {
+            segments += CreditLegendSegment(", con ${formatPlainDecimal(moratoriumInterestPercent)}% de interés moratorio mensual por retraso")
+        }
+        segments += CreditLegendSegment(".")
+
+        val cleanPlace = paymentPlace.trim()
+        if (cleanPlace.isNotEmpty()) {
+            val suffix = if (cleanPlace.endsWith(".")) "" else "."
+            segments += CreditLegendSegment(" Lugar de pago: $cleanPlace$suffix")
+        }
+        val cleanExtra = extraCondition.trim()
+        if (cleanExtra.isNotEmpty()) {
+            val suffix = if (cleanExtra.endsWith(".")) "" else "."
+            segments += CreditLegendSegment(" $cleanExtra$suffix")
+        }
+        val cleanClosing = closingNote.trim().ifBlank { "Válido con firma digital." }
+        segments += CreditLegendSegment(" $cleanClosing")
+        return segments
     }
 
     fun resolveModalityLabel(dbValue: String, items: List<WeighedBoxItem>): String {

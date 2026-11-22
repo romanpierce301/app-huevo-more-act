@@ -28,9 +28,11 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
@@ -42,7 +44,6 @@ import com.example.domain.DeliveryModality
 import com.example.domain.PaymentMethod
 import com.example.ui.theme.SpaceMonoFontFamily
 import com.example.ui.theme.ThermalAlertRed
-import com.example.ui.theme.ThermalDivider
 import com.example.ui.theme.ThermalInk
 import com.example.ui.theme.ThermalInkDark
 import com.example.ui.theme.ThermalInkMuted
@@ -75,6 +76,11 @@ fun ThermalTicket48mmView(
     val isCancelled = delivery.status == "CANCELADA"
     val isCredit = delivery.paymentMethod == PaymentMethod.CREDITO.dbValue
     val currentTotalDebt = delivery.previousDebtSnapshotMxn + delivery.pendingBalanceMxn
+    val effectivePaidMxn = if (!isCancelled) {
+        (delivery.finalAmountMxn - delivery.pendingBalanceMxn).coerceIn(0.0, delivery.finalAmountMxn)
+    } else {
+        delivery.initialPaymentMxn
+    }
 
     val rawSubtotal = BigDecimal.valueOf(delivery.rawAmountMxn).setScale(2, RoundingMode.HALF_UP)
     val finalBd = BigDecimal.valueOf(delivery.finalAmountMxn).setScale(2, RoundingMode.HALF_UP)
@@ -488,7 +494,7 @@ fun ThermalTicket48mmView(
 
             TicketPairRow(
                 "Pagado / Abono:",
-                "${CalculationEngine.formatMoney(delivery.initialPaymentMxn)} MXN",
+                "${CalculationEngine.formatMoney(effectivePaidMxn)} MXN",
                 boldValue = true,
             )
             Text(
@@ -539,7 +545,7 @@ fun ThermalTicket48mmView(
                 boldValue = true,
             )
             TicketPairRow(
-                "Esta entrega:",
+                "Esta remisión:",
                 "+${CalculationEngine.formatMoney(delivery.pendingBalanceMxn)} MXN",
                 boldLabel = true,
                 boldValue = true,
@@ -553,17 +559,75 @@ fun ThermalTicket48mmView(
                 valueColor = if (currentTotalDebt > 0.0 && !isCancelled) ThermalAlertRed else ThermalInkDark,
             )
 
-            // Solo Crédito lleva firma digital y leyenda legal de compromiso (Sección 7.2 y 7.3)
+            // Solo Crédito (pendiente o liquidado) lleva leyenda + firmabox + Recibí de conformidad (Sección 7.2 y 7.3)
             if (isCredit) {
                 Spacer(Modifier.height(10.dp))
                 DashedTicketDivider()
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(6.dp))
+                when {
+                    isCancelled -> {
+                        Text(
+                            text = "Nota cancelada. Las obligaciones de pago y entrega correspondientes fueron revertidas.",
+                            fontFamily = SpaceMonoFontFamily,
+                            fontSize = 8.5.sp,
+                            lineHeight = 11.sp,
+                            color = ThermalInk,
+                            textAlign = TextAlign.Start,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    delivery.pendingBalanceMxn > 0.0 -> {
+                        val effectiveTermDays = client?.creditTermDays ?: settings.creditTermDays
+                        val legendSegments = CalculationEngine.buildPendingCreditLegendSegments(
+                            deliveryDateMillis = delivery.dateMillis,
+                            pendingBalanceMxn = delivery.pendingBalanceMxn,
+                            totalDebtMxn = currentTotalDebt,
+                            effectiveTermDays = effectiveTermDays,
+                            moratoriumInterestPercent = settings.creditMoratoriumInterestPercent,
+                            paymentPlace = settings.creditPaymentPlace,
+                            extraCondition = settings.creditLegendExtra,
+                            closingNote = settings.creditLegendClosing,
+                        )
+                        val creditLegal = buildAnnotatedString {
+                            legendSegments.forEach { seg ->
+                                if (seg.bold) {
+                                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = ThermalInkDark)) {
+                                        append(seg.text)
+                                    }
+                                } else {
+                                    append(seg.text)
+                                }
+                            }
+                        }
+                        Text(
+                            text = creditLegal,
+                            fontFamily = SpaceMonoFontFamily,
+                            fontSize = 8.5.sp,
+                            lineHeight = 11.sp,
+                            color = ThermalInk,
+                            textAlign = TextAlign.Start,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    else -> {
+                        Text(
+                            text = "Recibí la mercancía descrita en esta remisión a mi entera satisfacción y cubrí el importe total señalado. Acepto mi firma digitalizada como constancia de recepción.",
+                            fontFamily = SpaceMonoFontFamily,
+                            fontSize = 8.5.sp,
+                            lineHeight = 11.sp,
+                            color = ThermalInk,
+                            textAlign = TextAlign.Start,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(74.dp)
-                        .background(Color.White, RoundedCornerShape(4.dp))
-                        .border(1.dp, ThermalDivider, RoundedCornerShape(4.dp))
+                        .height(68.dp)
+                        .background(Color.White)
+                        .border(1.dp, ThermalInkDark)
                         .padding(4.dp)
                         .testTag("ticket_credit_signature_box"),
                     contentAlignment = Alignment.Center,
@@ -584,23 +648,20 @@ fun ThermalTicket48mmView(
                         )
                     }
                 }
-                Spacer(Modifier.height(4.dp))
-                HorizontalDivider(color = ThermalInkDark, thickness = 0.8.dp)
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(5.dp))
                 Text(
-                    text = "Recibí de conformidad\n${delivery.clientName}",
+                    text = "Recibí de conformidad",
                     fontFamily = SpaceMonoFontFamily,
-                    fontSize = 9.5.sp,
+                    fontSize = 9.sp,
                     color = ThermalInkDark,
                     textAlign = TextAlign.Center,
                 )
-                Spacer(Modifier.height(6.dp))
                 Text(
-                    text = "\"${stringResource(R.string.credit_commitment_legend)}\"",
+                    text = delivery.clientName,
                     fontFamily = SpaceMonoFontFamily,
-                    fontSize = 8.5.sp,
-                    lineHeight = 11.sp,
-                    color = ThermalInk,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 9.5.sp,
+                    color = ThermalInkDark,
                     textAlign = TextAlign.Center,
                 )
             }

@@ -224,6 +224,11 @@ class ThermalPrinterManager(private val context: Context) {
         val rawSubtotal = BigDecimal.valueOf(delivery.rawAmountMxn).setScale(2, RoundingMode.HALF_UP)
         val finalBd = BigDecimal.valueOf(delivery.finalAmountMxn).setScale(2, RoundingMode.HALF_UP)
         val roundingDiff = finalBd.subtract(rawSubtotal).setScale(2, RoundingMode.HALF_UP)
+        val effectivePaidMxn = if (!isCancelled) {
+            (delivery.finalAmountMxn - delivery.pendingBalanceMxn).coerceIn(0.0, delivery.finalAmountMxn)
+        } else {
+            delivery.initialPaymentMxn
+        }
         val statusText = when {
             isCancelled -> "CANCELADO"
             delivery.pendingBalanceMxn > 0.0 -> "ENTREGADO / PENDIENTE LIQUIDACION"
@@ -378,7 +383,7 @@ class ThermalPrinterManager(private val context: Context) {
         out.write(asciiLine("--------------------------------"))
 
         val payLabel = PaymentMethod.fromDb(delivery.paymentMethod).label
-        out.write(pairLine("Pagado / Abono:", "${CalculationEngine.formatMoney(delivery.initialPaymentMxn)} MXN"))
+        out.write(pairLine("Pagado / Abono:", "${CalculationEngine.formatMoney(effectivePaidMxn)} MXN"))
         out.write(asciiLine("Forma pago: $payLabel"))
 
         // Barra invertida ESC/POS (GS B 1 / GS B 0)
@@ -396,13 +401,31 @@ class ThermalPrinterManager(private val context: Context) {
         out.write(asciiLine("--------------------------------"))
         out.write(byteArrayOf(0x1B, 0x45, 0x01))
         out.write(pairLine("Saldo anterior:", "${CalculationEngine.formatMoney(delivery.previousDebtSnapshotMxn)} MXN"))
-        out.write(pairLine("Esta entrega:", "+${CalculationEngine.formatMoney(delivery.pendingBalanceMxn)} MXN"))
+        out.write(pairLine("Esta remision:", "+${CalculationEngine.formatMoney(delivery.pendingBalanceMxn)} MXN"))
         val totalDebt = delivery.previousDebtSnapshotMxn + delivery.pendingBalanceMxn
         out.write(pairLine("SALDO TOTAL", "${CalculationEngine.formatMoney(totalDebt)} MXN"))
         out.write(byteArrayOf(0x1B, 0x45, 0x00))
 
         if (isCredit) {
             out.write(asciiLine("--------------------------------"))
+            val legend = when {
+                isCancelled -> "Nota cancelada. Las obligaciones de pago y entrega correspondientes fueron revertidas."
+                delivery.pendingBalanceMxn > 0.0 ->
+                    CalculationEngine.buildPendingCreditLegendSegments(
+                        deliveryDateMillis = delivery.dateMillis,
+                        pendingBalanceMxn = delivery.pendingBalanceMxn,
+                        totalDebtMxn = totalDebt,
+                        effectiveTermDays = client?.creditTermDays ?: settings.creditTermDays,
+                        moratoriumInterestPercent = settings.creditMoratoriumInterestPercent,
+                        paymentPlace = settings.creditPaymentPlace,
+                        extraCondition = settings.creditLegendExtra,
+                        closingNote = settings.creditLegendClosing,
+                    ).joinToString("") { it.text }
+                else ->
+                    "Recibi la mercancia descrita en esta remision a mi entera satisfaccion y cubri el importe total senalado. Acepto mi firma digitalizada como constancia de recepcion."
+            }
+            out.write(byteArrayOf(0x1B, 0x61, 0x00)) // Left
+            wrapAsciiLines(legend).forEach { out.write(asciiLine(it)) }
             out.write(byteArrayOf(0x1B, 0x61, 0x01)) // Center
             delivery.signaturePath?.let { path ->
                 val sigFile = File(path)
@@ -413,9 +436,9 @@ class ThermalPrinterManager(private val context: Context) {
                 }
             }
             out.write(asciiLine("Recibi de conformidad"))
+            out.write(byteArrayOf(0x1B, 0x45, 0x01))
             wrapAsciiLines(delivery.clientName).forEach { out.write(asciiLine(it)) }
-            val legend = context.getString(R.string.credit_commitment_legend)
-            wrapAsciiLines("\"$legend\"").forEach { out.write(asciiLine(it)) }
+            out.write(byteArrayOf(0x1B, 0x45, 0x00))
         }
 
         out.write(byteArrayOf(0x1B, 0x61, 0x01)) // Center

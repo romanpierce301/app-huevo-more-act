@@ -134,6 +134,41 @@ class HyhRepository(
         )
     }
 
+    suspend fun updateCreditLegendSettings(
+        creditTermDays: Int,
+        moratoriumInterestPercent: Double,
+        paymentPlace: String,
+        legendExtra: String,
+        legendClosing: String,
+    ) {
+        require(creditTermDays in 0..3650) {
+            "El tiempo límite debe estar entre 0 y 3650 días"
+        }
+        require(moratoriumInterestPercent.isFinite() && moratoriumInterestPercent in 0.0..100.0) {
+            "El interés moratorio debe estar entre 0% y 100%"
+        }
+        val current = ensureDefaultSettings()
+        dao.upsertSettings(
+            current.copy(
+                creditTermDays = creditTermDays,
+                creditMoratoriumInterestPercent = moratoriumInterestPercent,
+                creditPaymentPlace = paymentPlace.trim(),
+                creditLegendExtra = legendExtra.trim(),
+                creditLegendClosing = legendClosing.trim().ifBlank { "Válido con firma digital." },
+            ),
+        )
+    }
+
+    suspend fun updateClientCreditTermDays(clientId: Long, creditTermDays: Int?) {
+        if (creditTermDays != null) {
+            require(creditTermDays in 0..3650) {
+                "El tiempo límite del cliente debe estar entre 0 y 3650 días"
+            }
+        }
+        val client = dao.getClientById(clientId) ?: return
+        dao.updateClient(client.copy(creditTermDays = creditTermDays))
+    }
+
     // --- Clientes ---
     suspend fun saveClient(
         id: Long = 0,
@@ -791,6 +826,13 @@ class HyhRepository(
             printerAddress = sObj?.optString("printerAddress", "") ?: "",
             nextFolioSequence = sObj?.optInt("nextFolioSequence", 1)?.coerceAtLeast(1) ?: 1,
             nextClosingSequence = sObj?.optInt("nextClosingSequence", 1)?.coerceAtLeast(1) ?: 1,
+            creditTermDays = sObj?.optInt("creditTermDays", 7)?.coerceIn(0, 3650) ?: 7,
+            creditMoratoriumInterestPercent = sObj?.optDouble("creditMoratoriumInterestPercent", 0.0)
+                ?.takeIf { it.isFinite() && it in 0.0..100.0 } ?: 0.0,
+            creditPaymentPlace = sObj?.optString("creditPaymentPlace", "") ?: "",
+            creditLegendExtra = sObj?.optString("creditLegendExtra", "") ?: "",
+            creditLegendClosing = sObj?.optString("creditLegendClosing", "Válido con firma digital.")
+                ?.ifBlank { "Válido con firma digital." } ?: "Válido con firma digital.",
         )
 
         val clients = parseJsonArray(root.optJSONArray("clients")) { o ->
@@ -800,6 +842,7 @@ class HyhRepository(
                 phone = o.optString("phone", ""),
                 address = o.optString("address", ""),
                 specialPricePerKg = if (o.isNull("specialPricePerKg")) null else o.optDouble("specialPricePerKg"),
+                creditTermDays = if (o.isNull("creditTermDays")) null else o.optInt("creditTermDays").coerceIn(0, 3650),
                 createdAtMillis = o.optLong("createdAtMillis", System.currentTimeMillis()),
             )
         }

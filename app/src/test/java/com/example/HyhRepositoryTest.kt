@@ -220,14 +220,49 @@ class HyhRepositoryTest {
         val escPosBytes = com.example.system.ThermalPrinterManager(context)
             .buildEscPosTicketBytes(creditDelivery, settings, client)
         val asciiDump = String(escPosBytes, Charsets.US_ASCII)
+        val asciiSingleLine = asciiDump.replace('\n', ' ')
         assertTrue(asciiDump.contains("COMPROBANTE DE REMISION"))
         assertTrue(asciiDump.contains("KILOS NETOS"))
         assertTrue(asciiDump.contains("RESTA ENTREGA"))
+        assertTrue(asciiDump.contains("Esta remision:"))
         assertTrue(asciiDump.contains("SALDO TOTAL"))
+        assertTrue(asciiSingleLine.contains("reconozco el saldo pendiente"))
         assertTrue(asciiDump.contains("Recibi de conformidad"))
         assertTrue(asciiDump.contains("Tienda El Sol"))
 
-        // Contado must NOT contain the credit commitment legend
+        // Pay off the remaining credit balance via abono -> switches to settled credit template
+        repository.recordAbono(clientId, creditId, 1480.0, "Liquidacion total")
+        val settledCredit = repository.observeDeliveryById(creditId).first()!!
+        assertEquals(0.0, settledCredit.pendingBalanceMxn, 0.001)
+        val settledEstHeight = com.example.system.PdfDocumentGenerator.measureTicketHeight(
+            context = context,
+            delivery = settledCredit,
+            settings = settings,
+            client = client,
+        )
+        val settledBmp = Bitmap.createBitmap(220, settledEstHeight, Bitmap.Config.ARGB_8888)
+        val settledDrawn = com.example.system.PdfDocumentGenerator.renderTicketToCanvas(
+            context = context,
+            canvas = android.graphics.Canvas(settledBmp),
+            delivery = settledCredit,
+            settings = settings,
+            client = client,
+        )
+        assertTrue("Settled credit ticket height ($settledDrawn) must fit ($settledEstHeight)", settledDrawn <= settledEstHeight)
+
+        val settledEscPos = String(
+            com.example.system.ThermalPrinterManager(context)
+                .buildEscPosTicketBytes(settledCredit, settings, client),
+            Charsets.US_ASCII,
+        )
+        val settledSingleLine = settledEscPos.replace('\n', ' ')
+        assertTrue(settledEscPos.contains("LIQUIDADO"))
+        assertTrue(settledEscPos.contains("Esta remision:"))
+        assertTrue(settledSingleLine.contains("cubri el importe total senalado"))
+        assertTrue(settledEscPos.contains("Recibi de conformidad"))
+        assertTrue(!settledEscPos.contains("RESTA ENTREGA"))
+
+        // Contado must NOT contain signature or credit commitment legend
         val cashId = repository.registerDelivery(
             clientId = clientId,
             modality = DeliveryModality.MEDIA_CAJA_PESADA,
@@ -566,5 +601,290 @@ class HyhRepositoryTest {
         val betaAfterCancel = repository.observeInventoryBrands().first().first { it.brand == "Marca Beta" }
         assertEquals(10.0, alphaAfterCancel.remainingBoxes, 0.0001)
         assertEquals(8.0, betaAfterCancel.remainingBoxes, 0.0001)
+    }
+
+    @Test
+    fun `migration 2 to 3 preserves all existing clients deliveries and settings without data loss`() = runTest {
+        val dbFile = File(context.cacheDir, "migration_v2_to_v3_test.db").apply { delete() }
+        val helper = androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory().create(
+            androidx.sqlite.db.SupportSQLiteOpenHelper.Configuration.builder(context)
+                .name(dbFile.absolutePath)
+                .callback(object : androidx.sqlite.db.SupportSQLiteOpenHelper.Callback(2) {
+                    override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                        db.execSQL(
+                            """
+                            CREATE TABLE IF NOT EXISTS clients (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                                name TEXT NOT NULL,
+                                phone TEXT NOT NULL,
+                                address TEXT NOT NULL,
+                                specialPricePerKg REAL,
+                                createdAtMillis INTEGER NOT NULL
+                            )
+                            """.trimIndent(),
+                        )
+                        db.execSQL(
+                            """
+                            CREATE TABLE IF NOT EXISTS egg_purchases (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                                purchaseDateMillis INTEGER NOT NULL,
+                                boxes REAL NOT NULL,
+                                brand TEXT NOT NULL,
+                                grossWeightKg REAL NOT NULL,
+                                createdAtMillis INTEGER NOT NULL
+                            )
+                            """.trimIndent(),
+                        )
+                        db.execSQL(
+                            """
+                            CREATE TABLE IF NOT EXISTS inventory_brands (
+                                brand TEXT PRIMARY KEY NOT NULL,
+                                availableBoxes REAL NOT NULL,
+                                deliveredBoxes REAL NOT NULL
+                            )
+                            """.trimIndent(),
+                        )
+                        db.execSQL(
+                            """
+                            CREATE TABLE IF NOT EXISTS deliveries (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                                folio TEXT NOT NULL,
+                                clientId INTEGER NOT NULL,
+                                clientName TEXT NOT NULL,
+                                dateMillis INTEGER NOT NULL,
+                                modality TEXT NOT NULL,
+                                brand TEXT NOT NULL,
+                                boxes REAL NOT NULL,
+                                grossWeightKg REAL NOT NULL,
+                                tareDeductionKg REAL NOT NULL,
+                                netWeightKg REAL NOT NULL,
+                                pricePerKg REAL NOT NULL,
+                                rawAmountMxn REAL NOT NULL,
+                                finalAmountMxn REAL NOT NULL,
+                                paymentMethod TEXT NOT NULL,
+                                initialPaymentMxn REAL NOT NULL,
+                                pendingBalanceMxn REAL NOT NULL,
+                                previousDebtSnapshotMxn REAL NOT NULL,
+                                totalAccumulatedDebtSnapshotMxn REAL NOT NULL,
+                                signaturePath TEXT,
+                                status TEXT NOT NULL,
+                                cancelledAtMillis INTEGER,
+                                cancellationReason TEXT,
+                                itemsSnapshotJson TEXT NOT NULL DEFAULT '[]'
+                            )
+                            """.trimIndent(),
+                        )
+                        db.execSQL(
+                            """
+                            CREATE TABLE IF NOT EXISTS abonos (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                                clientId INTEGER NOT NULL,
+                                deliveryId INTEGER NOT NULL,
+                                deliveryFolio TEXT NOT NULL,
+                                amountMxn REAL NOT NULL,
+                                dateMillis INTEGER NOT NULL,
+                                note TEXT NOT NULL,
+                                isCancelled INTEGER NOT NULL
+                            )
+                            """.trimIndent(),
+                        )
+                        db.execSQL(
+                            """
+                            CREATE TABLE IF NOT EXISTS reminders (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                                clientId INTEGER NOT NULL,
+                                clientName TEXT NOT NULL,
+                                deliveryDateMillis INTEGER NOT NULL,
+                                boxesNote TEXT NOT NULL,
+                                note TEXT NOT NULL,
+                                isCompleted INTEGER NOT NULL,
+                                completedAtMillis INTEGER,
+                                createdAtMillis INTEGER NOT NULL
+                            )
+                            """.trimIndent(),
+                        )
+                        db.execSQL(
+                            """
+                            CREATE TABLE IF NOT EXISTS daily_closings (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                                folio TEXT NOT NULL,
+                                dateKey TEXT NOT NULL,
+                                createdAtMillis INTEGER NOT NULL,
+                                totalDeliveries INTEGER NOT NULL,
+                                totalBoxesDelivered REAL NOT NULL,
+                                totalKgDelivered REAL NOT NULL,
+                                cashSalesMxn REAL NOT NULL,
+                                creditSalesMxn REAL NOT NULL,
+                                abonosReceivedMxn REAL NOT NULL,
+                                totalMoneyCollectedMxn REAL NOT NULL,
+                                pendingDebtsMxn REAL NOT NULL,
+                                clientsServedCount INTEGER NOT NULL,
+                                movementsSnapshotJson TEXT NOT NULL,
+                                pdfPath TEXT NOT NULL,
+                                jsonPath TEXT NOT NULL,
+                                hashSignature TEXT NOT NULL
+                            )
+                            """.trimIndent(),
+                        )
+                        db.execSQL(
+                            """
+                            CREATE TABLE IF NOT EXISTS backup_records (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                                fileName TEXT NOT NULL,
+                                filePath TEXT NOT NULL,
+                                format TEXT NOT NULL,
+                                sizeBytes INTEGER NOT NULL,
+                                createdAtMillis INTEGER NOT NULL
+                            )
+                            """.trimIndent(),
+                        )
+                        db.execSQL(
+                            """
+                            CREATE TABLE IF NOT EXISTS business_settings (
+                                id INTEGER NOT NULL PRIMARY KEY,
+                                businessName TEXT NOT NULL,
+                                slogan TEXT NOT NULL,
+                                phone TEXT NOT NULL,
+                                address TEXT NOT NULL,
+                                globalPricePerKg REAL NOT NULL,
+                                printerType TEXT NOT NULL,
+                                printerName TEXT NOT NULL,
+                                printerAddress TEXT NOT NULL,
+                                nextFolioSequence INTEGER NOT NULL,
+                                nextClosingSequence INTEGER NOT NULL
+                            )
+                            """.trimIndent(),
+                        )
+                        // Insert existing production-like data before v2 -> v3 upgrade
+                        db.execSQL(
+                            "INSERT INTO clients (id, name, phone, address, specialPricePerKg, createdAtMillis) VALUES (1, 'Tienda Don Pepe', '5511112222', 'Calle 5 #10', 43.0, 1700000000000)",
+                        )
+                        db.execSQL(
+                            "INSERT INTO deliveries (id, folio, clientId, clientName, dateMillis, modality, brand, boxes, grossWeightKg, tareDeductionKg, netWeightKg, pricePerKg, rawAmountMxn, finalAmountMxn, paymentMethod, initialPaymentMxn, pendingBalanceMxn, previousDebtSnapshotMxn, totalAccumulatedDebtSnapshotMxn, signaturePath, status, cancelledAtMillis, cancellationReason, itemsSnapshotJson) VALUES (1, 'HYH-2026-0009', 1, 'Tienda Don Pepe', 1700000000000, 'CAJA_COMPLETA', 'San Juan', 2.0, 44.0, 4.0, 40.0, 43.0, 1720.0, 1720.0, 'CREDITO', 500.0, 1220.0, 0.0, 1220.0, NULL, 'ACTIVA', NULL, NULL, '[]')",
+                        )
+                        db.execSQL(
+                            "INSERT INTO business_settings (id, businessName, slogan, phone, address, globalPricePerKg, printerType, printerName, printerAddress, nextFolioSequence, nextClosingSequence) VALUES (1, 'H y H HUEVOS', 'LOS MAS FRESCOS DE LA ZONA', '5599998888', 'Bodega 1', 44.5, 'BLUETOOTH', '', '', 10, 4)",
+                        )
+                    }
+
+                    override fun onUpgrade(db: androidx.sqlite.db.SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+                })
+                .build(),
+        )
+        helper.writableDatabase.close()
+
+        // Open via Room with real MIGRATION_1_2 + MIGRATION_2_3 to validate full schema compatibility
+        val upgradedDb = Room.databaseBuilder(context, HyhDatabase::class.java, dbFile.absolutePath)
+            .addMigrations(HyhDatabase.MIGRATION_1_2, HyhDatabase.MIGRATION_2_3)
+            .allowMainThreadQueries()
+            .build()
+        val upgradedRepo = HyhRepository(context, upgradedDb)
+
+        val clients = upgradedRepo.observeClients().first()
+        val deliveries = upgradedRepo.observeDeliveries().first()
+        val settings = upgradedRepo.getSettingsOnce()
+
+        assertEquals(1, clients.size)
+        assertEquals("Tienda Don Pepe", clients.first().name)
+        assertEquals(null, clients.first().creditTermDays)
+
+        assertEquals(1, deliveries.size)
+        assertEquals("HYH-2026-0009", deliveries.first().folio)
+        assertEquals(1220.0, deliveries.first().pendingBalanceMxn, 0.001)
+
+        assertEquals(10, settings.nextFolioSequence)
+        assertEquals(44.5, settings.globalPricePerKg, 0.001)
+        assertEquals(7, settings.creditTermDays)
+        assertEquals(0.0, settings.creditMoratoriumInterestPercent, 0.001)
+        assertEquals("Válido con firma digital.", settings.creditLegendClosing)
+
+        upgradedDb.close()
+        dbFile.delete()
+    }
+
+    @Test
+    fun `custom credit limit days and legend boxes render on credit ticket and survive json backup restore`() = runTest {
+        val clientId = repository.saveClient(
+            name = "Cremería La Palma",
+            phone = "5544332211",
+            address = "Av. Hidalgo 50",
+            specialPricePerKg = null,
+        )
+        repository.updateCreditLegendSettings(
+            creditTermDays = 15,
+            moratoriumInterestPercent = 3.5,
+            paymentPlace = "Bodega Central o transferencia",
+            legendExtra = "Mercancía revisada al entregar",
+            legendClosing = "Autorizado con firma digital.",
+        )
+        repository.updateClientCreditTermDays(clientId, 21)
+
+        repository.registerPurchase(
+            purchaseDateMillis = System.currentTimeMillis(),
+            boxes = 10.0,
+            brand = "San Juan",
+            grossWeightKg = 240.0,
+        )
+        val sig = Bitmap.createBitmap(120, 60, Bitmap.Config.ARGB_8888)
+        val deliveryId = repository.registerDelivery(
+            clientId = clientId,
+            modality = DeliveryModality.CAJA_COMPLETA,
+            brand = "San Juan",
+            boxes = 2.0,
+            grossWeightKg = 44.0,
+            tareDeductionKg = 4.0,
+            netWeightKg = 40.0,
+            pricePerKg = 45.0,
+            rawAmountMxn = 1800.0,
+            finalAmountMxn = 1800.0,
+            paymentMethod = PaymentMethod.CREDITO,
+            initialPaymentMxn = 300.0,
+            signatureBitmap = sig,
+        )
+        val delivery = repository.observeDeliveryById(deliveryId).first()!!
+        val settings = repository.getSettingsOnce()
+        val client = repository.getClientOnce(clientId)!!
+
+        assertEquals(21, client.creditTermDays)
+        val escPos = String(
+            com.example.system.ThermalPrinterManager(context)
+                .buildEscPosTicketBytes(delivery, settings, client),
+            Charsets.US_ASCII,
+        ).replace('\n', ' ')
+        assertTrue(escPos.contains("plazo: 21 dias"))
+        assertTrue(escPos.contains("3.5% de interes moratorio mensual"))
+        assertTrue(escPos.contains("Lugar de pago: Bodega Central o transferencia."))
+        assertTrue(escPos.contains("Mercancia revisada al entregar."))
+        assertTrue(escPos.contains("Autorizado con firma digital."))
+
+        val estHeight = com.example.system.PdfDocumentGenerator.measureTicketHeight(
+            context = context,
+            delivery = delivery,
+            settings = settings,
+            client = client,
+        )
+        val bmp = Bitmap.createBitmap(220, estHeight, Bitmap.Config.ARGB_8888)
+        val drawn = com.example.system.PdfDocumentGenerator.renderTicketToCanvas(
+            context = context,
+            canvas = android.graphics.Canvas(bmp),
+            delivery = delivery,
+            settings = settings,
+            client = client,
+        )
+        assertTrue("Custom credit legend PDF height ($drawn) must fit ($estHeight)", drawn <= estHeight)
+
+        // Backup JSON & Restore preserves new settings and per-client creditTermDays
+        val backup = repository.exportFullJsonBackup()
+        val restoreRes = repository.restoreFromLocalBackup(backup)
+        assertTrue(restoreRes.isSuccess)
+        val restoredSettings = repository.getSettingsOnce()
+        val restoredClient = repository.getClientOnce(clientId)!!
+        assertEquals(15, restoredSettings.creditTermDays)
+        assertEquals(3.5, restoredSettings.creditMoratoriumInterestPercent, 0.001)
+        assertEquals("Bodega Central o transferencia", restoredSettings.creditPaymentPlace)
+        assertEquals("Mercancía revisada al entregar", restoredSettings.creditLegendExtra)
+        assertEquals("Autorizado con firma digital.", restoredSettings.creditLegendClosing)
+        assertEquals(21, restoredClient.creditTermDays)
+        File(backup.filePath).delete()
     }
 }

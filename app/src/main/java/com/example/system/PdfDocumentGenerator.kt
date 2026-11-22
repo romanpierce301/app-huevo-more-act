@@ -149,6 +149,11 @@ object PdfDocumentGenerator {
             "BRUTO"
         }
         val currentAccum = delivery.previousDebtSnapshotMxn + delivery.pendingBalanceMxn
+        val effectivePaidMxn = if (!isCancelled) {
+            (delivery.finalAmountMxn - delivery.pendingBalanceMxn).coerceIn(0.0, delivery.finalAmountMxn)
+        } else {
+            delivery.initialPaymentMxn
+        }
         val rawSubtotal = BigDecimal.valueOf(delivery.rawAmountMxn).setScale(2, RoundingMode.HALF_UP)
         val finalBd = BigDecimal.valueOf(delivery.finalAmountMxn).setScale(2, RoundingMode.HALF_UP)
         val roundingDiff = finalBd.subtract(rawSubtotal).setScale(2, RoundingMode.HALF_UP)
@@ -381,7 +386,7 @@ object PdfDocumentGenerator {
 
         paint.textSize = 7.5f
         boldPaint.textSize = 7.5f
-        y = drawRow(canvas, "Pagado / Abono:", "${CalculationEngine.formatMoney(delivery.initialPaymentMxn)} MXN", margin, pageWidth - margin, paint, boldPaint, y)
+        y = drawRow(canvas, "Pagado / Abono:", "${CalculationEngine.formatMoney(effectivePaidMxn)} MXN", margin, pageWidth - margin, paint, boldPaint, y)
         paint.textSize = 7f
         y = drawWrapped(canvas, "Forma de pago: ${PaymentMethod.fromDb(delivery.paymentMethod).label}", paint, margin, y - 4f, contentWidth, Layout.Alignment.ALIGN_NORMAL)
 
@@ -415,32 +420,54 @@ object PdfDocumentGenerator {
 
         boldPaint.textSize = 7.5f
         y = drawRow(canvas, "Saldo anterior:", "${CalculationEngine.formatMoney(delivery.previousDebtSnapshotMxn)} MXN", margin, pageWidth - margin, boldPaint, boldPaint, y)
-        y = drawRow(canvas, "Esta entrega:", "+${CalculationEngine.formatMoney(delivery.pendingBalanceMxn)} MXN", margin, pageWidth - margin, boldPaint, boldPaint, y)
+        y = drawRow(canvas, "Esta remisión:", "+${CalculationEngine.formatMoney(delivery.pendingBalanceMxn)} MXN", margin, pageWidth - margin, boldPaint, boldPaint, y)
         boldPaint.textSize = 8.5f
         y = drawRow(canvas, "SALDO TOTAL", "${CalculationEngine.formatMoney(currentAccum)} MXN", margin, pageWidth - margin, boldPaint, boldPaint, y + 1f)
 
-        // Solo Crédito lleva firma digital y leyenda legal de compromiso
+        // Solo Crédito (pendiente o liquidado) lleva leyenda + firmabox + Recibí de conformidad
         if (isCredit) {
             y = drawDashedLine(canvas, margin, pageWidth - margin, y + 4f, dashPaint) + 8f
-            if (signatureRaw != null) {
-                val sigW = contentWidth.coerceAtMost(176)
-                val sigH = ((signatureRaw.height.toFloat() / signatureRaw.width.toFloat()) * sigW)
-                    .toInt()
-                    .coerceIn(40, 72)
-                val scaledSig = Bitmap.createScaledBitmap(signatureRaw, sigW, sigH, true)
-                canvas.drawBitmap(scaledSig, (pageWidth - sigW) / 2f, y, null)
-                y += sigH + 5f
-            } else {
-                y += 28f
-                canvas.drawLine(margin + 16f, y, pageWidth - margin - 16f, y, thinLinePaint)
-                y += 6f
+            val legendText = when {
+                isCancelled -> "Nota cancelada. Las obligaciones de pago y entrega correspondientes fueron revertidas."
+                delivery.pendingBalanceMxn > 0.0 ->
+                    CalculationEngine.buildPendingCreditLegendSegments(
+                        deliveryDateMillis = delivery.dateMillis,
+                        pendingBalanceMxn = delivery.pendingBalanceMxn,
+                        totalDebtMxn = currentAccum,
+                        effectiveTermDays = client?.creditTermDays ?: settings.creditTermDays,
+                        moratoriumInterestPercent = settings.creditMoratoriumInterestPercent,
+                        paymentPlace = settings.creditPaymentPlace,
+                        extraCondition = settings.creditLegendExtra,
+                        closingNote = settings.creditLegendClosing,
+                    ).joinToString("") { it.text }
+                else ->
+                    "Recibí la mercancía descrita en esta remisión a mi entera satisfacción y cubrí el importe total señalado. Acepto mi firma digitalizada como constancia de recepción."
             }
-            paint.textSize = 7f
-            y = drawWrapped(canvas, "Recibí de conformidad\n${delivery.clientName}", paint, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
-            y += 4f
-            val legend = context.getString(R.string.credit_commitment_legend)
             paint.textSize = 6.5f
-            y = drawWrapped(canvas, "\"$legend\"", paint, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
+            y = drawWrapped(canvas, legendText, paint, margin, y, contentWidth, Layout.Alignment.ALIGN_NORMAL)
+            y += 4f
+
+            val sigBoxHeight = 56f
+            val sigBoxTop = y
+            val sigBoxBottom = y + sigBoxHeight
+            canvas.drawRect(RectF(margin, sigBoxTop, pageWidth - margin, sigBoxBottom), thinLinePaint.apply { style = Paint.Style.STROKE })
+            if (signatureRaw != null && signatureRaw.width > 0 && signatureRaw.height > 0) {
+                val maxSigW = (contentWidth - 8).toFloat()
+                val maxSigH = sigBoxHeight - 6f
+                val ratio = minOf(maxSigW / signatureRaw.width.toFloat(), maxSigH / signatureRaw.height.toFloat())
+                val drawW = (signatureRaw.width * ratio).toInt().coerceAtLeast(1)
+                val drawH = (signatureRaw.height * ratio).toInt().coerceAtLeast(1)
+                val scaledSig = Bitmap.createScaledBitmap(signatureRaw, drawW, drawH, true)
+                val left = margin + (contentWidth - drawW) / 2f
+                val top = sigBoxTop + (sigBoxHeight - drawH) / 2f
+                canvas.drawBitmap(scaledSig, left, top, null)
+            }
+            y = sigBoxBottom + 6f
+
+            paint.textSize = 7f
+            y = drawWrapped(canvas, "Recibí de conformidad", paint, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
+            boldPaint.textSize = 7.5f
+            y = drawWrapped(canvas, delivery.clientName, boldPaint, margin, y - 2f, contentWidth, Layout.Alignment.ALIGN_CENTER)
         }
 
         y = drawDashedLine(canvas, margin, pageWidth - margin, y + 6f, dashPaint) + 8f

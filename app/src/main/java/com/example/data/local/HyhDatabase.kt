@@ -29,7 +29,7 @@ import com.example.data.local.entity.ReminderEntity
         BackupRecordEntity::class,
         BusinessSettingsEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class HyhDatabase : RoomDatabase() {
@@ -47,13 +47,36 @@ abstract class HyhDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE clients ADD COLUMN creditTermDays INTEGER DEFAULT NULL",
+                )
+                db.execSQL(
+                    "ALTER TABLE business_settings ADD COLUMN creditTermDays INTEGER NOT NULL DEFAULT 7",
+                )
+                db.execSQL(
+                    "ALTER TABLE business_settings ADD COLUMN creditMoratoriumInterestPercent REAL NOT NULL DEFAULT 0.0",
+                )
+                db.execSQL(
+                    "ALTER TABLE business_settings ADD COLUMN creditPaymentPlace TEXT NOT NULL DEFAULT ''",
+                )
+                db.execSQL(
+                    "ALTER TABLE business_settings ADD COLUMN creditLegendExtra TEXT NOT NULL DEFAULT ''",
+                )
+                db.execSQL(
+                    "ALTER TABLE business_settings ADD COLUMN creditLegendClosing TEXT NOT NULL DEFAULT 'Válido con firma digital.'",
+                )
+            }
+        }
+
         fun getInstance(context: Context): HyhDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     HyhDatabase::class.java,
                     "hyh_huevos_local.db",
-                ).addMigrations(MIGRATION_1_2).build().also { INSTANCE = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { INSTANCE = it }
             }
         }
     }

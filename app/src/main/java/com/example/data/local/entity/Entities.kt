@@ -10,6 +10,7 @@ data class ClientEntity(
     val phone: String = "",
     val address: String,
     val specialPricePerKg: Double? = null,
+    val creditTermDays: Int? = null,
     val createdAtMillis: Long = System.currentTimeMillis(),
 )
 
@@ -131,4 +132,9 @@ data class BusinessSettingsEntity(
     val printerAddress: String = "",
     val nextFolioSequence: Int = 1,
     val nextClosingSequence: Int = 1,
+    val creditTermDays: Int = 7,
+    val creditMoratoriumInterestPercent: Double = 0.0,
+    val creditPaymentPlace: String = "",
+    val creditLegendExtra: String = "",
+    val creditLegendClosing: String = "Válido con firma digital.",
 )

@@ -180,25 +180,41 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- Overlays operacionales (Sección 11) ---
     fun runDeliveriesHistoryLoading() {
+        if (_overlayState.value is OverlayState.Loading) return
         viewModelScope.launch {
-            _overlayState.value = OverlayState.Loading(
-                title = "Cargando entregas",
-                message = "Recuperando historial local de notas y folios...",
-            )
-            delay(450)
-            _overlayState.value = OverlayState.None
+            try {
+                _overlayState.value = OverlayState.Loading(
+                    title = "Cargando entregas",
+                    message = "Recuperando historial local de notas y folios...",
+                )
+                delay(2400)
+            } finally {
+                if (_overlayState.value is OverlayState.Loading) {
+                    _overlayState.value = OverlayState.None
+                }
+            }
         }
     }
 
     fun openTicketWithLoading(onReady: () -> Unit) {
+        if (_overlayState.value is OverlayState.Loading) return
         viewModelScope.launch {
-            _overlayState.value = OverlayState.Loading(
-                title = "Cargando ticket",
-                message = "Preparando comprobante térmico de 48 mm...",
-            )
-            delay(420)
-            _overlayState.value = OverlayState.None
-            onReady()
+            var completed = false
+            try {
+                _overlayState.value = OverlayState.Loading(
+                    title = "Cargando ticket",
+                    message = "Preparando comprobante térmico de 48 mm...",
+                )
+                delay(2200)
+                completed = true
+            } finally {
+                if (_overlayState.value is OverlayState.Loading) {
+                    _overlayState.value = OverlayState.None
+                }
+            }
+            if (completed) {
+                onReady()
+            }
         }
     }
 
@@ -455,7 +471,7 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
                     title = "Entrega registrada",
                     message = "El ticket y los saldos locales se guardaron correctamente.",
                 )
-                delay(1150)
+                delay(2600)
                 _overlayState.value = OverlayState.None
                 onCompleted(deliveryId)
             }.onFailure { err ->
@@ -495,7 +511,7 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
                     title = "Entrega cancelada",
                     message = "Se conservó el folio y se revirtieron inventario y saldos.",
                 )
-                delay(1400)
+                delay(2400)
                 _overlayState.value = OverlayState.None
             }.onFailure {
                 _feedbackMessage.value = it.message ?: "No se pudo cancelar la entrega"
@@ -554,7 +570,7 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
                     title = "Cierre diario completado",
                     message = "Folio ${closing.folio} guardado en PDF y JSON.",
                 )
-                delay(1200)
+                delay(2600)
                 _overlayState.value = OverlayState.None
             }.onFailure {
                 _feedbackMessage.value = it.message ?: "Error al generar cierre diario"
@@ -693,8 +709,11 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
 
     fun restoreFromUri(uri: Uri) {
         viewModelScope.launch {
+            val startedAt = System.currentTimeMillis()
             _overlayState.value = OverlayState.Loading("Restaurando respaldo", "Validando datos locales...")
             val result = repository.restoreBackupFromUri(uri)
+            val remaining = (2000L - (System.currentTimeMillis() - startedAt)).coerceAtLeast(0L)
+            if (remaining > 0L) delay(remaining)
             _overlayState.value = OverlayState.None
             result.onSuccess { msg ->
                 _feedbackMessage.value = msg
@@ -706,8 +725,11 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
 
     fun restoreFromRecord(record: BackupRecordEntity) {
         viewModelScope.launch {
+            val startedAt = System.currentTimeMillis()
             _overlayState.value = OverlayState.Loading("Restaurando respaldo", "Recuperando base de datos...")
             val result = repository.restoreFromLocalBackup(record)
+            val remaining = (2000L - (System.currentTimeMillis() - startedAt)).coerceAtLeast(0L)
+            if (remaining > 0L) delay(remaining)
             _overlayState.value = OverlayState.None
             result.onSuccess { msg ->
                 _feedbackMessage.value = msg
@@ -792,6 +814,56 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
             printerManager.printTestTicket(current)
                 .onSuccess { _feedbackMessage.value = it }
                 .onFailure { _feedbackMessage.value = it.message ?: "Error al probar impresora" }
+        }
+    }
+
+    fun saveCreditLegendConfig(
+        creditTermDaysText: String,
+        moratoriumInterestText: String,
+        paymentPlace: String,
+        legendExtra: String,
+        legendClosing: String,
+    ) {
+        viewModelScope.launch {
+            runCatching {
+                val cleanDays = creditTermDaysText.trim()
+                val days = cleanDays.toIntOrNull()
+                    ?: throw IllegalArgumentException("Ingresa un número válido de días límite")
+                val interestClean = moratoriumInterestText.trim().replace(",", ".")
+                val interest = if (interestClean.isEmpty()) {
+                    0.0
+                } else {
+                    interestClean.toDoubleOrNull()
+                        ?: throw IllegalArgumentException("Interés moratorio inválido")
+                }
+                repository.updateCreditLegendSettings(
+                    creditTermDays = days,
+                    moratoriumInterestPercent = interest,
+                    paymentPlace = paymentPlace,
+                    legendExtra = legendExtra,
+                    legendClosing = legendClosing,
+                )
+            }.onSuccess {
+                _feedbackMessage.value = "Configuración de crédito y leyenda guardada"
+            }.onFailure {
+                _feedbackMessage.value = it.message ?: "Error al guardar configuración de crédito"
+            }
+        }
+    }
+
+    fun updateClientCreditTermDays(clientId: Long, daysText: String) {
+        viewModelScope.launch {
+            runCatching {
+                val parsed = daysText.trim().takeIf { it.isNotEmpty() }?.let {
+                    it.toIntOrNull()
+                        ?: throw IllegalArgumentException("Plazo límite de días inválido")
+                }
+                repository.updateClientCreditTermDays(clientId, parsed)
+            }.onSuccess {
+                _feedbackMessage.value = "Plazo de crédito del cliente actualizado"
+            }.onFailure {
+                _feedbackMessage.value = it.message ?: "Error al actualizar plazo del cliente"
+            }
         }
     }
 }

@@ -112,6 +112,7 @@ object JsonExporter {
                         put("phone", c.phone)
                         put("address", c.address)
                         put("specialPricePerKg", c.specialPricePerKg ?: JSONObject.NULL)
+                        put("creditTermDays", c.creditTermDays ?: JSONObject.NULL)
                         put("createdAtMillis", c.createdAtMillis)
                     },
                 )
@@ -244,6 +245,11 @@ object JsonExporter {
             put("printerAddress", settings.printerAddress)
             put("nextFolioSequence", settings.nextFolioSequence)
             put("nextClosingSequence", settings.nextClosingSequence)
+            put("creditTermDays", settings.creditTermDays)
+            put("creditMoratoriumInterestPercent", settings.creditMoratoriumInterestPercent)
+            put("creditPaymentPlace", settings.creditPaymentPlace)
+            put("creditLegendExtra", settings.creditLegendExtra)
+            put("creditLegendClosing", settings.creditLegendClosing)
         }
 
         return JSONObject().apply {

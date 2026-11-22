@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.ReceiptLong
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
@@ -83,6 +84,7 @@ import com.example.ui.screens.BienvenidaScreen
 import com.example.ui.screens.CierresDiariosScreen
 import com.example.ui.screens.ClientesScreen
 import com.example.ui.screens.ConfiguracionScreen
+import com.example.ui.screens.CreditoConfigScreen
 import com.example.ui.screens.DetalleCierreScreen
 import com.example.ui.screens.EntregasRealizadasScreen
 import com.example.ui.screens.FirmaDigitalScreen
@@ -123,6 +125,7 @@ object HyhRoutes {
     const val CIERRES_DIARIOS = "cierres_diarios"
     const val DETALLE_CIERRE = "detalle_cierre/{closingId}"
     const val RESPALDOS_LOCALES = "respaldos_locales"
+    const val CREDITO_CONFIG = "credito_config"
     const val CONFIGURACION = "configuracion"
 
     fun perfilCliente(clientId: Long) = "perfil_cliente/$clientId"
@@ -147,6 +150,7 @@ private val drawerModules = listOf(
     DrawerModuleItem(HyhRoutes.RECORDATORIOS, "Recordatorios", Icons.Default.NotificationsActive, "drawer_recordatorios"),
     DrawerModuleItem(HyhRoutes.CIERRES_DIARIOS, "Cierres Diarios", Icons.Default.PointOfSale, "drawer_cierres"),
     DrawerModuleItem(HyhRoutes.RESPALDOS_LOCALES, "Respaldos Locales", Icons.Default.FolderZip, "drawer_respaldos"),
+    DrawerModuleItem(HyhRoutes.CREDITO_CONFIG, "Crédito y Leyenda", Icons.Default.Schedule, "drawer_credito_config"),
     DrawerModuleItem(HyhRoutes.CONFIGURACION, "Configuración", Icons.Default.Settings, "drawer_configuracion"),
 )
 
@@ -583,6 +587,17 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                                 onSaveBackupToDownloads = viewModel::saveExistingBackupToDownloads,
                                 onRestoreFromUri = viewModel::restoreFromUri,
                                 onRestoreFromRecord = viewModel::restoreFromRecord,
+                            )
+                        }
+
+                        composable(HyhRoutes.CREDITO_CONFIG) {
+                            BackHandler { navigateToTopModule(HyhRoutes.PANEL_PRINCIPAL) }
+                            CreditoConfigScreen(
+                                settings = settings,
+                                clients = clients,
+                                onOpenDrawer = { scope.launch { drawerState.open() } },
+                                onSaveCreditLegendConfig = viewModel::saveCreditLegendConfig,
+                                onUpdateClientCreditTermDays = viewModel::updateClientCreditTermDays,
                             )
                         }
 
