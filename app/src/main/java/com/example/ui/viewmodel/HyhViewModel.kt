@@ -19,6 +19,8 @@ import com.example.data.local.entity.DeliveryEntity
 import com.example.data.local.entity.EggPurchaseEntity
 import com.example.data.local.entity.InventoryBrandEntity
 import com.example.data.local.entity.ReminderEntity
+import com.example.data.local.entity.SugarInventoryEntity
+import com.example.data.local.entity.SugarPurchaseEntity
 import com.example.domain.CalculationEngine
 import com.example.domain.DeliveryCalculationResult
 import com.example.domain.DeliveryModality
@@ -55,13 +57,19 @@ data class DeliveryDraftState(
     val nextBoxSeq: Long = 1L,
     val paymentMethod: PaymentMethod = PaymentMethod.CONTADO,
     val initialAbonoInput: String = "",
+    val sugarSacksInput: String = "",
+    val sugarWeightPerSackInput: String = "",
+    val sugarPricePerSackInput: String = "",
 ) {
     val hasCapturedData: Boolean
         get() = clientId != null ||
             brand.isNotBlank() ||
             weighedItems.isNotEmpty() ||
             weightInputKg.isNotBlank() ||
-            initialAbonoInput.isNotBlank()
+            initialAbonoInput.isNotBlank() ||
+            sugarSacksInput.isNotBlank() ||
+            sugarWeightPerSackInput.isNotBlank() ||
+            sugarPricePerSackInput.isNotBlank()
 }
 
 sealed interface OverlayState {
@@ -114,6 +122,12 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
 
     val inventoryBrands: StateFlow<List<InventoryBrandEntity>> = repository.observeInventoryBrands()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val sugarPurchases: StateFlow<List<SugarPurchaseEntity>> = repository.observeSugarPurchases()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val sugarInventory: StateFlow<SugarInventoryEntity> = repository.observeSugarInventory()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SugarInventoryEntity())
 
     val activeAbonos: StateFlow<List<AbonoEntity>> = repository.observeActiveAbonos()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -203,7 +217,7 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 _overlayState.value = OverlayState.Loading(
                     title = "Cargando ticket",
-                    message = "Preparando comprobante térmico de 48 mm...",
+                    message = "Preparando comprobante térmico de 60 mm...",
                 )
                 delay(2200)
                 completed = true
@@ -285,6 +299,26 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
                 onSuccess()
             }.onFailure {
                 _feedbackMessage.value = it.message ?: "Datos inválidos en la compra"
+            }
+        }
+    }
+
+    fun registerSugarPurchase(
+        purchaseDateMillis: Long,
+        sacksText: String,
+        totalWeightText: String,
+        onSuccess: () -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            runCatching {
+                val sacks = CalculationEngine.parsePositiveDecimal(sacksText).toDouble()
+                val totalWeight = CalculationEngine.parsePositiveDecimal(totalWeightText).toDouble()
+                repository.registerSugarPurchase(purchaseDateMillis, sacks, totalWeight)
+            }.onSuccess {
+                _feedbackMessage.value = "Compra de azúcar registrada e inventario actualizado"
+                onSuccess()
+            }.onFailure {
+                _feedbackMessage.value = it.message ?: "Datos inválidos en la compra de azúcar"
             }
         }
     }
@@ -381,15 +415,33 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
         _deliveryDraft.update { it.copy(initialAbonoInput = abono) }
     }
 
+    fun updateDraftSugarSacks(sacks: String) {
+        _deliveryDraft.update { it.copy(sugarSacksInput = sacks) }
+    }
+
+    fun updateDraftSugarWeightPerSack(weight: String) {
+        _deliveryDraft.update { it.copy(sugarWeightPerSackInput = weight) }
+    }
+
+    fun updateDraftSugarPricePerSack(price: String) {
+        _deliveryDraft.update { it.copy(sugarPricePerSackInput = price) }
+    }
+
     fun computeDraftCalculation(
         draft: DeliveryDraftState,
         @Suppress("UNUSED_PARAMETER") settings: BusinessSettingsEntity,
         @Suppress("UNUSED_PARAMETER") clients: List<ClientWithDebt>,
     ): DeliveryCalculationResult {
         val priceBd = CalculationEngine.parsePositiveDecimal(draft.pricePerKgInput)
-        return CalculationEngine.calculateDeliveryFromItems(
+        val sugarSummary = CalculationEngine.calculateSugarSummary(
+            sacksInput = draft.sugarSacksInput,
+            weightPerSackInput = draft.sugarWeightPerSackInput,
+            pricePerSackInput = draft.sugarPricePerSackInput,
+        )
+        return CalculationEngine.calculateDeliveryWithSugar(
             items = draft.weighedItems,
             pricePerKg = priceBd,
+            sugarSummary = sugarSummary,
         )
     }
 
@@ -405,20 +457,30 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
                 _feedbackMessage.value = "Seleccione un cliente antes de continuar"
                 return@launch
             }
-            if (draft.weighedItems.isEmpty()) {
-                _feedbackMessage.value = "Agrega al menos una caja o media caja con el botón +"
+            val priceBd = CalculationEngine.parsePositiveDecimal(draft.pricePerKgInput)
+            val sugarSummary = CalculationEngine.calculateSugarSummary(
+                sacksInput = draft.sugarSacksInput,
+                weightPerSackInput = draft.sugarWeightPerSackInput,
+                pricePerSackInput = draft.sugarPricePerSackInput,
+            )
+            if (sugarSummary.isPartialError) {
+                _feedbackMessage.value = "Completa bultos, peso y precio del azúcar (o deja los campos vacíos)"
                 return@launch
             }
-            val priceBd = CalculationEngine.parsePositiveDecimal(draft.pricePerKgInput)
-            val calc = CalculationEngine.calculateDeliveryFromItems(
+            if (draft.weighedItems.isEmpty() && !sugarSummary.isPresent) {
+                _feedbackMessage.value = "Agrega al menos una caja (+) o bultos de azúcar"
+                return@launch
+            }
+            val calc = CalculationEngine.calculateDeliveryWithSugar(
                 items = draft.weighedItems,
                 pricePerKg = priceBd,
+                sugarSummary = sugarSummary,
             )
             if (!calc.isValid) {
-                _feedbackMessage.value = if (priceBd <= BigDecimal.ZERO) {
+                _feedbackMessage.value = if (draft.weighedItems.isNotEmpty() && priceBd <= BigDecimal.ZERO) {
                     "Ingresa el precio por kilogramo en Nueva Entrega"
                 } else {
-                    "Verifique cajas pesadas, peso neto y precio por kilogramo"
+                    "Verifique cajas pesadas, bultos de azúcar y precios"
                 }
                 return@launch
             }
@@ -427,7 +489,9 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
 
-            val effectivePrice = if (calc.pricePerKg > BigDecimal.ZERO) {
+            val effectivePrice = if (draft.weighedItems.isEmpty()) {
+                0.0
+            } else if (calc.pricePerKg > BigDecimal.ZERO) {
                 calc.pricePerKg.toDouble()
             } else {
                 priceBd.toDouble()
@@ -440,10 +504,14 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
                     .toDouble()
                     .coerceIn(0.0, finalMxn)
             }
-            val resolvedBrand = CalculationEngine.resolveBrandSummaryLabel(
-                fallbackBrand = draft.brand.ifBlank { repository.getDefaultBrandOnce() },
-                items = draft.weighedItems,
-            )
+            val resolvedBrand = if (draft.weighedItems.isNotEmpty()) {
+                CalculationEngine.resolveBrandSummaryLabel(
+                    fallbackBrand = draft.brand.ifBlank { repository.getDefaultBrandOnce() },
+                    items = draft.weighedItems,
+                )
+            } else {
+                "Azúcar"
+            }
             val distinctMods = draft.weighedItems.map { it.modality }.distinct()
             val primaryModality = distinctMods.firstOrNull() ?: draft.modality
 
@@ -463,6 +531,10 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
                     initialPaymentMxn = initialAbono,
                     signatureBitmap = signatureBitmap,
                     weighedItems = draft.weighedItems,
+                    sugarSacks = if (sugarSummary.isPresent) sugarSummary.sacks.toDouble() else 0.0,
+                    sugarSackWeightKg = if (sugarSummary.isPresent) sugarSummary.weightPerSackKg.toDouble() else 0.0,
+                    sugarPricePerSackMxn = if (sugarSummary.isPresent) sugarSummary.pricePerSackMxn.toDouble() else 0.0,
+                    sugarSubtotalMxn = if (sugarSummary.isPresent) sugarSummary.subtotalMxn.toDouble() else 0.0,
                 )
             }.onSuccess { deliveryId ->
                 soundManager.playPaymentSuccessSound()

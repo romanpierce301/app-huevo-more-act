@@ -16,6 +16,8 @@ import com.example.data.local.entity.DeliveryEntity
 import com.example.data.local.entity.EggPurchaseEntity
 import com.example.data.local.entity.InventoryBrandEntity
 import com.example.data.local.entity.ReminderEntity
+import com.example.data.local.entity.SugarInventoryEntity
+import com.example.data.local.entity.SugarPurchaseEntity
 
 @Database(
     entities = [
@@ -28,8 +30,10 @@ import com.example.data.local.entity.ReminderEntity
         DailyClosingEntity::class,
         BackupRecordEntity::class,
         BusinessSettingsEntity::class,
+        SugarPurchaseEntity::class,
+        SugarInventoryEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class HyhDatabase : RoomDatabase() {
@@ -70,13 +74,52 @@ abstract class HyhDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS sugar_purchases (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        purchaseDateMillis INTEGER NOT NULL,
+                        sacks REAL NOT NULL,
+                        totalWeightKg REAL NOT NULL,
+                        createdAtMillis INTEGER NOT NULL
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS sugar_inventory (
+                        id INTEGER NOT NULL PRIMARY KEY,
+                        availableSacks REAL NOT NULL,
+                        deliveredSacks REAL NOT NULL,
+                        availableWeightKg REAL NOT NULL,
+                        deliveredWeightKg REAL NOT NULL
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "ALTER TABLE deliveries ADD COLUMN sugarSacks REAL NOT NULL DEFAULT 0.0",
+                )
+                db.execSQL(
+                    "ALTER TABLE deliveries ADD COLUMN sugarSackWeightKg REAL NOT NULL DEFAULT 0.0",
+                )
+                db.execSQL(
+                    "ALTER TABLE deliveries ADD COLUMN sugarPricePerSackMxn REAL NOT NULL DEFAULT 0.0",
+                )
+                db.execSQL(
+                    "ALTER TABLE deliveries ADD COLUMN sugarSubtotalMxn REAL NOT NULL DEFAULT 0.0",
+                )
+            }
+        }
+
         fun getInstance(context: Context): HyhDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     HyhDatabase::class.java,
                     "hyh_huevos_local.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { INSTANCE = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { INSTANCE = it }
             }
         }
     }

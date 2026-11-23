@@ -247,4 +247,80 @@ class CalculationEngineTest {
             CalculationEngine.amountInWordsMxn(1_000_000.0),
         )
     }
+
+    @Test
+    fun `calculateSugarSummary handles empty valid and partial inputs without defaults`() {
+        val empty = CalculationEngine.calculateSugarSummary("", "", "")
+        assertFalse(empty.isPresent)
+        assertFalse(empty.isPartialError)
+        assertEquals(0, empty.subtotalMxn.compareTo(BigDecimal.ZERO))
+
+        val partial = CalculationEngine.calculateSugarSummary("3", "50", "")
+        assertFalse(partial.isPresent)
+        assertTrue(partial.isPartialError)
+
+        val valid = CalculationEngine.calculateSugarSummary("3", "50", "920.50")
+        assertTrue(valid.isPresent)
+        assertFalse(valid.isPartialError)
+        assertEquals(0, valid.sacks.compareTo(BigDecimal("3")))
+        assertEquals(0, valid.totalWeightKg.compareTo(BigDecimal("150")))
+        assertEquals(0, valid.subtotalMxn.compareTo(BigDecimal("2761.50")))
+    }
+
+    @Test
+    fun `calculateDeliveryWithSugar integrates egg and sugar balances and supports sugar-only`() {
+        val eggItem = CalculationEngine.calculateSingleBoxItem(
+            id = 1L,
+            modality = DeliveryModality.CAJA_COMPLETA,
+            weightInputKg = "24.000", // 22 net * 40.00 = 880.00
+            brand = "San Juan",
+            pricePerKg = BigDecimal("40.00"),
+        ).getOrThrow()
+        val sugar = CalculationEngine.calculateSugarSummary("2", "50", "850.25") // 100 kg, 1700.50 MXN
+
+        val mixed = CalculationEngine.calculateDeliveryWithSugar(
+            items = listOf(eggItem),
+            pricePerKg = BigDecimal("40.00"),
+            sugarSummary = sugar,
+        )
+        assertTrue(mixed.isValid)
+        assertEquals(0, mixed.netWeightKg.compareTo(BigDecimal("22")))
+        assertEquals(0, mixed.combinedNetWeightKg.compareTo(BigDecimal("122")))
+        // 880.00 + 1700.50 = 2580.50 (== 50c keeps .50)
+        assertEquals(BigDecimal("2580.50"), mixed.finalAmountMxn)
+
+        // Sugar-only delivery (0 egg boxes)
+        val sugarOnly = CalculationEngine.calculateDeliveryWithSugar(
+            items = emptyList(),
+            pricePerKg = BigDecimal.ZERO,
+            sugarSummary = sugar,
+        )
+        assertTrue(sugarOnly.isValid)
+        assertEquals(0, sugarOnly.boxesDecimal.compareTo(BigDecimal.ZERO))
+        assertEquals(0, sugarOnly.combinedNetWeightKg.compareTo(BigDecimal("100")))
+        assertEquals(BigDecimal("1700.50"), sugarOnly.finalAmountMxn)
+
+        // Partial sugar input invalidates overall delivery
+        val partialSugar = CalculationEngine.calculateSugarSummary("2", "", "850")
+        val invalid = CalculationEngine.calculateDeliveryWithSugar(
+            items = listOf(eggItem),
+            pricePerKg = BigDecimal("40.00"),
+            sugarSummary = partialSugar,
+        )
+        assertFalse(invalid.isValid)
+    }
+
+    @Test
+    fun `summarizeBrandBreakdown falls back cleanly for legacy deliveries without itemsSnapshotJson`() {
+        val breakdown = CalculationEngine.summarizeBrandBreakdown(
+            items = emptyList(),
+            fallbackBrand = "Tehuacán",
+            fallbackPricePerKg = BigDecimal("45.00"),
+            fallbackBoxes = BigDecimal("2"),
+            fallbackNetWeightKg = BigDecimal("44.00"),
+        )
+        assertEquals(1, breakdown.size)
+        assertEquals("Tehuacán", breakdown[0].brand)
+        assertEquals(0, breakdown[0].subtotalMxn.compareTo(BigDecimal("1980.00")))
+    }
 }

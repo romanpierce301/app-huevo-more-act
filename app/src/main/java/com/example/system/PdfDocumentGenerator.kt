@@ -33,6 +33,9 @@ object PdfDocumentGenerator {
     private val dateFormatter = SimpleDateFormat("dd 'de' MMMM, yyyy", Locale("es", "MX"))
     private val timeFormatter = SimpleDateFormat("hh:mm a", Locale.US)
 
+    const val TICKET_PAGE_WIDTH_PT = 170 // 60 mm exactos (72 dpi)
+    const val TICKET_PAGE_HEIGHT_PT = 369 // 130 mm exactos (72 dpi)
+
     fun generateTicketPdf(
         context: Context,
         delivery: DeliveryEntity,
@@ -42,10 +45,9 @@ object PdfDocumentGenerator {
         val dir = File(context.filesDir, "tickets").apply { mkdirs() }
         val file = File(dir, "Ticket_${delivery.folio}.pdf")
 
-        // 48mm thermal receipt proportional canvas
-        val pageWidth = 220
-        val margin = 12f
-        val contentWidth = (pageWidth - margin * 2).toInt()
+        val pageWidth = TICKET_PAGE_WIDTH_PT
+        val pageHeight = TICKET_PAGE_HEIGHT_PT
+        val margin = 8f
 
         val logoRaw = BitmapFactory.decodeResource(context.resources, R.drawable.img_ticket_logo)
         val signatureRaw = delivery.signaturePath?.let { path ->
@@ -53,24 +55,14 @@ object PdfDocumentGenerator {
             if (sigFile.exists()) BitmapFactory.decodeFile(sigFile.absolutePath) else null
         }
 
-        val estimatedHeight = measureTicketHeight(
-            context = context,
-            pageWidth = pageWidth,
-            margin = margin,
-            delivery = delivery,
-            settings = settings,
-            client = client,
-            logoRaw = logoRaw,
-            signatureRaw = signatureRaw,
-        )
-
         val pdf = PdfDocument()
-        val pageInfo = PdfDocument.PageInfo.Builder(pageWidth, estimatedHeight, 1).create()
+        val pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, 1).create()
         val page = pdf.startPage(pageInfo)
         renderTicketToCanvas(
             context = context,
             canvas = page.canvas,
             pageWidth = pageWidth,
+            pageHeight = pageHeight,
             margin = margin,
             delivery = delivery,
             settings = settings,
@@ -88,8 +80,9 @@ object PdfDocumentGenerator {
     internal fun renderTicketToCanvas(
         context: Context,
         canvas: Canvas,
-        pageWidth: Int = 220,
-        margin: Float = 12f,
+        pageWidth: Int = TICKET_PAGE_WIDTH_PT,
+        pageHeight: Int = TICKET_PAGE_HEIGHT_PT,
+        margin: Float = 8f,
         delivery: DeliveryEntity,
         settings: BusinessSettingsEntity,
         client: ClientEntity? = null,
@@ -99,54 +92,106 @@ object PdfDocumentGenerator {
             if (sigFile.exists()) BitmapFactory.decodeFile(sigFile.absolutePath) else null
         },
     ): Float {
-        val contentWidth = (pageWidth - margin * 2).toInt()
+        val naturalHeight = measureNaturalTicketHeight(
+            context = context,
+            pageWidth = pageWidth,
+            margin = margin,
+            delivery = delivery,
+            settings = settings,
+            client = client,
+            logoRaw = logoRaw,
+            signatureRaw = signatureRaw,
+        )
         canvas.drawColor(Color.WHITE)
+        val availH = (pageHeight - 4f).coerceAtLeast(100f)
+        val fitScale = if (naturalHeight > availH) {
+            (availH / naturalHeight).coerceIn(0.35f, 1.0f)
+        } else {
+            1.0f
+        }
+        canvas.save()
+        if (fitScale < 1.0f) {
+            canvas.scale(fitScale, fitScale, pageWidth / 2f, 0f)
+        }
+        val rawDrawn = renderTicketNaturalToCanvas(
+            canvas = canvas,
+            pageWidth = pageWidth,
+            margin = margin,
+            delivery = delivery,
+            settings = settings,
+            client = client,
+            logoRaw = logoRaw,
+            signatureRaw = signatureRaw,
+        )
+        canvas.restore()
+        return rawDrawn * fitScale
+    }
+
+    private fun renderTicketNaturalToCanvas(
+        canvas: Canvas,
+        pageWidth: Int,
+        margin: Float,
+        delivery: DeliveryEntity,
+        settings: BusinessSettingsEntity,
+        client: ClientEntity?,
+        logoRaw: Bitmap?,
+        signatureRaw: Bitmap?,
+    ): Float {
+        val contentWidth = (pageWidth - margin * 2).toInt()
 
         val monoRegular = Typeface.MONOSPACE
         val monoBold = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
 
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.BLACK
-            textSize = 7.5f
+            textSize = 6.2f
             typeface = monoRegular
         }
         val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.BLACK
-            textSize = 7.5f
+            textSize = 6.2f
             typeface = monoBold
         }
         val thickLinePaint = Paint().apply {
             color = Color.BLACK
-            strokeWidth = 1.6f
+            strokeWidth = 1.3f
         }
         val thinLinePaint = Paint().apply {
             color = Color.BLACK
-            strokeWidth = 0.8f
+            strokeWidth = 0.7f
         }
         val dashPaint = Paint().apply {
             color = Color.DKGRAY
-            strokeWidth = 0.8f
+            strokeWidth = 0.7f
         }
 
         val isCancelled = delivery.status == "CANCELADA"
         val isCredit = delivery.paymentMethod == PaymentMethod.CREDITO.dbValue
         val weighedItems = CalculationEngine.parseWeighedItemsJson(delivery.itemsSnapshotJson)
-        val modalityLabel = CalculationEngine.resolveModalityLabel(delivery.modality, weighedItems)
-        val brandBreakdown = CalculationEngine.summarizeBrandBreakdown(
-            items = weighedItems,
-            fallbackBrand = delivery.brand,
-            fallbackPricePerKg = BigDecimal.valueOf(delivery.pricePerKg),
-        )
-        val hasMultiBrandOrPrice = brandBreakdown.size > 1
-        val headerBrandSummary = CalculationEngine.resolveBrandSummaryLabel(delivery.brand, weighedItems)
-        val allWeightedHalf = weighedItems.isNotEmpty() &&
-            weighedItems.all { it.modality == DeliveryModality.MEDIA_CAJA_PESADA }
-        val secondColHeader = if (weighedItems.isEmpty()) {
-            if (DeliveryModality.fromDb(delivery.modality) == DeliveryModality.MEDIA_CAJA_PESADA) "ING.kg" else "BRUTO"
-        } else if (allWeightedHalf) {
-            "ING.kg"
+        val hasEggs = delivery.boxes > 0.0 || weighedItems.isNotEmpty()
+        val hasSugar = delivery.sugarSacks > 0.0
+        val sugarWeightKg = if (hasSugar) {
+            BigDecimal.valueOf(delivery.sugarSacks).multiply(BigDecimal.valueOf(delivery.sugarSackWeightKg))
         } else {
-            "BRUTO"
+            BigDecimal.ZERO
+        }
+        val totalNetWeightKg = BigDecimal.valueOf(delivery.netWeightKg).add(sugarWeightKg)
+        val modalityLabel = CalculationEngine.resolveModalityLabel(delivery.modality, weighedItems)
+        val brandBreakdown = if (hasEggs) {
+            CalculationEngine.summarizeBrandBreakdown(
+                items = weighedItems,
+                fallbackBrand = delivery.brand,
+                fallbackPricePerKg = BigDecimal.valueOf(delivery.pricePerKg),
+                fallbackBoxes = BigDecimal.valueOf(delivery.boxes),
+                fallbackNetWeightKg = BigDecimal.valueOf(delivery.netWeightKg),
+            )
+        } else {
+            emptyList()
+        }
+        val headerBrandSummary = if (hasEggs) {
+            CalculationEngine.resolveBrandSummaryLabel(delivery.brand, weighedItems)
+        } else {
+            ""
         }
         val currentAccum = delivery.previousDebtSnapshotMxn + delivery.pendingBalanceMxn
         val effectivePaidMxn = if (!isCancelled) {
@@ -163,200 +208,128 @@ object PdfDocumentGenerator {
             else -> "LIQUIDADO"
         }
 
-        var y = 10f
+        var y = 6f
 
-        // Logotipo térmico 1-bit con nombre y lema integrados
-        if (logoRaw != null) {
-            val targetW = contentWidth
-            val targetH = ((logoRaw.height.toFloat() / logoRaw.width.toFloat()) * targetW)
-                .toInt()
-                .coerceAtLeast(40)
+        // Logotipo térmico 1-bit centrado y proporcionado para 60mm x 130mm
+        if (logoRaw != null && logoRaw.width > 0 && logoRaw.height > 0) {
+            val maxLogoH = 42f
+            val ratio = minOf(contentWidth.toFloat() / logoRaw.width.toFloat(), maxLogoH / logoRaw.height.toFloat())
+            val targetW = (logoRaw.width * ratio).toInt().coerceAtLeast(24)
+            val targetH = (logoRaw.height * ratio).toInt().coerceAtLeast(20)
             val scaledLogo = Bitmap.createScaledBitmap(logoRaw, targetW, targetH, true)
-            canvas.drawBitmap(scaledLogo, margin, y, null)
-            y += targetH + 5f
+            val logoLeft = margin + (contentWidth - targetW) / 2f
+            canvas.drawBitmap(scaledLogo, logoLeft, y, null)
+            y += targetH + 3f
         }
 
         if (settings.address.isNotBlank()) {
-            y = drawWrapped(canvas, settings.address, paint.apply { textSize = 7f }, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
+            y = drawWrapped(canvas, settings.address, paint.apply { textSize = 5.6f }, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
         }
         if (settings.phone.isNotBlank()) {
-            y = drawWrapped(canvas, "Tel: ${settings.phone}", paint.apply { textSize = 7f }, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
+            y = drawWrapped(canvas, "Tel: ${settings.phone}", paint.apply { textSize = 5.6f }, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
         }
 
-        y += 4f
+        y += 2f
         canvas.drawLine(margin, y, pageWidth - margin, y, thickLinePaint)
-        y += 10f
+        y += 7f
 
         if (isCancelled) {
             val cancelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.BLACK
-                textSize = 13f
+                textSize = 10f
                 typeface = monoBold
                 textAlign = Paint.Align.CENTER
             }
             val boxPaint = Paint().apply {
                 color = Color.BLACK
                 style = Paint.Style.STROKE
-                strokeWidth = 1.6f
+                strokeWidth = 1.3f
             }
-            canvas.drawRect(margin, y - 9f, pageWidth - margin, y + 9f, boxPaint)
-            canvas.drawText("CANCELADO", pageWidth / 2f, y + 4f, cancelPaint)
-            y += 18f
+            canvas.drawRect(margin, y - 7f, pageWidth - margin, y + 6f, boxPaint)
+            canvas.drawText("CANCELADO", pageWidth / 2f, y + 3f, cancelPaint)
+            y += 12f
         }
-
-        boldPaint.textSize = 8.5f
-        y = drawWrapped(canvas, "COMPROBANTE DE REMISIÓN", boldPaint, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
-        boldPaint.textSize = 10.5f
-        y = drawWrapped(canvas, delivery.folio, boldPaint, margin, y + 1f, contentWidth, Layout.Alignment.ALIGN_CENTER)
-        y += 4f
-
-        paint.textSize = 7.5f
-        boldPaint.textSize = 7.5f
-        y = drawRow(canvas, "Fecha:", dateFormatter.format(Date(delivery.dateMillis)), margin, pageWidth - margin, paint, boldPaint, y)
-        y = drawRow(canvas, "Hora:", timeFormatter.format(Date(delivery.dateMillis)), margin, pageWidth - margin, paint, boldPaint, y)
-        y += 2f
-        boldPaint.textSize = 7f
-        y = drawWrapped(canvas, statusText, boldPaint, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
-
-        y = drawDashedLine(canvas, margin, pageWidth - margin, y + 5f, dashPaint) + 8f
-
-        // Bloque CLIENTE
-        boldPaint.textSize = 7.5f
-        y = drawWrapped(canvas, "CLIENTE", boldPaint, margin, y, contentWidth, Layout.Alignment.ALIGN_NORMAL)
-        boldPaint.textSize = 8.5f
-        y = drawWrapped(canvas, delivery.clientName, boldPaint, margin, y, contentWidth, Layout.Alignment.ALIGN_NORMAL)
-        paint.textSize = 7f
-        if (!client?.address.isNullOrBlank()) {
-            y = drawWrapped(canvas, client?.address.orEmpty(), paint, margin, y, contentWidth, Layout.Alignment.ALIGN_NORMAL)
-        }
-        if (!client?.phone.isNullOrBlank()) {
-            y = drawWrapped(canvas, "Tel: ${client?.phone.orEmpty()}", paint, margin, y, contentWidth, Layout.Alignment.ALIGN_NORMAL)
-        }
-
-        y = drawDashedLine(canvas, margin, pageWidth - margin, y + 5f, dashPaint) + 8f
-
-        // Producto + Tabla 4 columnas (No./CANT | BRUTO/ING.kg | TARA | NETO kg)
-        paint.textSize = 7.2f
-        y = drawWrapped(canvas, "$headerBrandSummary • $modalityLabel", paint, margin, y, contentWidth, Layout.Alignment.ALIGN_NORMAL)
-        y += 6f
-
-        val colCantX = margin
-        val colBrutoX = margin + contentWidth * 0.44f
-        val colTaraX = margin + contentWidth * 0.70f
-        val colNetoX = pageWidth - margin
 
         boldPaint.textSize = 6.8f
-        val rightBold = Paint(boldPaint).apply { textAlign = Paint.Align.RIGHT }
-        val rightReg = Paint(paint).apply {
-            textSize = 7.2f
-            textAlign = Paint.Align.RIGHT
-        }
-        canvas.drawText(if (weighedItems.isNotEmpty()) "No." else "CANT", colCantX, y, boldPaint)
-        canvas.drawText(secondColHeader, colBrutoX, y, rightBold)
-        canvas.drawText("TARA", colTaraX, y, rightBold)
-        canvas.drawText("NETO kg", colNetoX, y, rightBold)
-        y += 3f
-        canvas.drawLine(margin, y, pageWidth - margin, y, thinLinePaint)
-        y += 10f
-
-        boldPaint.textSize = 7.2f
-        rightBold.textSize = 7.2f
-        if (weighedItems.isNotEmpty()) {
-            val groupBoldPaint = Paint(boldPaint).apply { textSize = 6.7f }
-            var prevGroupKey: Pair<String, BigDecimal>? = null
-            weighedItems.forEachIndexed { idx, item ->
-                if (hasMultiBrandOrPrice) {
-                    val effBrand = item.brand.trim().ifBlank { delivery.brand.ifBlank { "General" } }
-                    val effPrice = (if (item.pricePerKg > BigDecimal.ZERO) item.pricePerKg else BigDecimal.valueOf(delivery.pricePerKg))
-                        .stripTrailingZeros()
-                    val groupKey = effBrand to effPrice
-                    if (groupKey != prevGroupKey) {
-                        prevGroupKey = groupKey
-                        if (idx > 0) y += 2f
-                        canvas.drawText(
-                            "$effBrand (${CalculationEngine.formatMoney(effPrice)}/kg)".take(34),
-                            margin,
-                            y,
-                            groupBoldPaint,
-                        )
-                        y += 10f
-                    }
-                }
-                val numLabel = buildString {
-                    append(String.format(Locale.US, "%02d", idx + 1))
-                    if (item.modality != DeliveryModality.CAJA_COMPLETA) append(" 1/2")
-                }
-                canvas.drawText(numLabel, colCantX, y, boldPaint)
-                canvas.drawText(CalculationEngine.formatExactWeight(item.inputWeightKg), colBrutoX, y, rightReg)
-                canvas.drawText(CalculationEngine.formatExactWeight(item.tareDeductionKg), colTaraX, y, rightReg)
-                canvas.drawText(CalculationEngine.formatExactWeight(item.netWeightKg), colNetoX, y, rightBold)
-                if (idx < weighedItems.lastIndex) {
-                    y += 10f
-                }
-            }
-        } else {
-            canvas.drawText(CalculationEngine.formatExactBoxes(delivery.boxes), colCantX, y, boldPaint)
-            canvas.drawText(CalculationEngine.formatExactWeight(delivery.grossWeightKg), colBrutoX, y, rightReg)
-            canvas.drawText(CalculationEngine.formatExactWeight(delivery.tareDeductionKg), colTaraX, y, rightReg)
-            canvas.drawText(CalculationEngine.formatExactWeight(delivery.netWeightKg), colNetoX, y, rightBold)
-        }
-
-        y = drawDashedLine(canvas, margin, pageWidth - margin, y + 6f, dashPaint) + 10f
-
-        paint.textSize = 7.5f
-        boldPaint.textSize = 7.5f
-        y = drawRow(canvas, "Cajas:", CalculationEngine.formatExactBoxes(delivery.boxes), margin, pageWidth - margin, paint, boldPaint, y)
-        y = drawRow(canvas, "Tara total:", "${CalculationEngine.formatExactWeight(delivery.tareDeductionKg)} kg", margin, pageWidth - margin, paint, boldPaint, y)
-        y = drawRow(
-            canvas,
-            if (secondColHeader == "ING.kg") "Peso ingresado:" else "Bruto total:",
-            "${CalculationEngine.formatExactWeight(delivery.grossWeightKg)} kg",
-            margin,
-            pageWidth - margin,
-            paint,
-            boldPaint,
-            y,
-        )
-
-        // Recuadro KILOS NETOS
+        y = drawWrapped(canvas, "COMPROBANTE DE REMISIÓN", boldPaint, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
+        boldPaint.textSize = 8.4f
+        y = drawWrapped(canvas, delivery.folio, boldPaint, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
         y += 2f
+
+        paint.textSize = 6.0f
+        boldPaint.textSize = 6.0f
+        y = drawRow(canvas, "Fecha:", dateFormatter.format(Date(delivery.dateMillis)), margin, pageWidth - margin, paint, boldPaint, y, rowStep = 9f)
+        y = drawRow(canvas, "Hora:", timeFormatter.format(Date(delivery.dateMillis)), margin, pageWidth - margin, paint, boldPaint, y, rowStep = 9f)
+        boldPaint.textSize = 5.8f
+        y = drawWrapped(canvas, statusText, boldPaint, margin, y - 2f, contentWidth, Layout.Alignment.ALIGN_CENTER)
+
+        y = drawDashedLine(canvas, margin, pageWidth - margin, y + 2f, dashPaint) + 5f
+
+        // Bloque CLIENTE
+        boldPaint.textSize = 6.0f
+        y = drawWrapped(canvas, "CLIENTE", boldPaint, margin, y, contentWidth, Layout.Alignment.ALIGN_NORMAL)
+        boldPaint.textSize = 6.8f
+        y = drawWrapped(canvas, delivery.clientName, boldPaint, margin, y - 1f, contentWidth, Layout.Alignment.ALIGN_NORMAL)
+        paint.textSize = 5.6f
+        if (!client?.address.isNullOrBlank()) {
+            y = drawWrapped(canvas, client?.address.orEmpty(), paint, margin, y - 1f, contentWidth, Layout.Alignment.ALIGN_NORMAL)
+        }
+        if (!client?.phone.isNullOrBlank()) {
+            y = drawWrapped(canvas, "Tel: ${client?.phone.orEmpty()}", paint, margin, y - 1f, contentWidth, Layout.Alignment.ALIGN_NORMAL)
+        }
+
+        y = drawDashedLine(canvas, margin, pageWidth - margin, y + 2f, dashPaint) + 5f
+
+        // Resumen por marca (y azúcar si aplica), sin detalle individual de pesos/tara/cajas/bruto
+        val productHeader = when {
+            hasEggs && hasSugar -> "$headerBrandSummary • $modalityLabel + Azúcar"
+            hasSugar -> "Azúcar (Bultos)"
+            else -> "$headerBrandSummary • $modalityLabel"
+        }
+        paint.textSize = 5.8f
+        y = drawWrapped(canvas, productHeader, paint, margin, y, contentWidth, Layout.Alignment.ALIGN_NORMAL)
+        y += 2f
+
+        paint.textSize = 5.8f
+        boldPaint.textSize = 5.8f
+        brandBreakdown.forEach { b ->
+            val leftPart = "${b.brand.take(12)} ${CalculationEngine.formatExactWeight(b.netWeightKg)}kg×${CalculationEngine.formatMoney(b.pricePerKg)}"
+            val rightPart = CalculationEngine.formatMoney(b.subtotalMxn.setScale(2, RoundingMode.HALF_UP))
+            y = drawRow(canvas, leftPart, rightPart, margin, pageWidth - margin, paint, boldPaint, y, rowStep = 9f, leftMaxLen = 33)
+        }
+        if (hasSugar) {
+            val sLeft = "Azúcar ${CalculationEngine.formatExactBoxes(delivery.sugarSacks)}bto×${CalculationEngine.formatExactWeight(delivery.sugarSackWeightKg)}kg"
+            val sRight = CalculationEngine.formatMoney(delivery.sugarSubtotalMxn)
+            y = drawRow(canvas, sLeft, sRight, margin, pageWidth - margin, paint, boldPaint, y, rowStep = 9f, leftMaxLen = 33)
+        }
+
+        // Recuadro KILOS NETOS total
+        y += 1f
         val boxStroke = Paint().apply {
             color = Color.BLACK
             style = Paint.Style.STROKE
-            strokeWidth = 1.2f
+            strokeWidth = 1.0f
         }
-        val netBoxTop = y - 6f
-        val netBoxBottom = y + 10f
+        val netBoxTop = y - 4f
+        val netBoxBottom = y + 9f
         canvas.drawRect(RectF(margin, netBoxTop, pageWidth - margin, netBoxBottom), boxStroke)
-        boldPaint.textSize = 8.2f
+        boldPaint.textSize = 6.6f
         drawRow(
             canvas,
             "KILOS NETOS",
-            "${CalculationEngine.formatExactWeight(delivery.netWeightKg)} kg",
-            margin + 5f,
-            pageWidth - margin - 5f,
+            "${CalculationEngine.formatExactWeight(totalNetWeightKg)} kg",
+            margin + 4f,
+            pageWidth - margin - 4f,
             boldPaint,
             boldPaint,
             y + 5f,
+            rowStep = 9f,
         )
-        y = netBoxBottom + 12f
+        y = netBoxBottom + 9f
 
-        if (hasMultiBrandOrPrice) {
-            paint.textSize = 6.9f
-            boldPaint.textSize = 6.9f
-            brandBreakdown.forEach { b ->
-                val leftPart = "${b.brand.take(11)} ${CalculationEngine.formatMoney(b.pricePerKg)}/kg"
-                val rightPart = "${CalculationEngine.formatExactWeight(b.netWeightKg)}kg ${CalculationEngine.formatMoney(b.subtotalMxn.setScale(2, RoundingMode.HALF_UP))}"
-                y = drawRow(canvas, leftPart, rightPart, margin, pageWidth - margin, paint, boldPaint, y)
-            }
-            paint.textSize = 7.5f
-            boldPaint.textSize = 7.5f
-        } else {
-            paint.textSize = 7.5f
-            boldPaint.textSize = 7.5f
-            y = drawRow(canvas, "Precio por kilo:", CalculationEngine.formatMoney(delivery.pricePerKg), margin, pageWidth - margin, paint, boldPaint, y)
-        }
-        y = drawRow(canvas, "Subtotal:", CalculationEngine.formatMoney(rawSubtotal), margin, pageWidth - margin, paint, boldPaint, y)
+        paint.textSize = 6.0f
+        boldPaint.textSize = 6.0f
+        y = drawRow(canvas, "Subtotal:", CalculationEngine.formatMoney(rawSubtotal), margin, pageWidth - margin, paint, boldPaint, y, rowStep = 9f)
         if (roundingDiff.compareTo(BigDecimal.ZERO) != 0) {
             val sign = if (roundingDiff > BigDecimal.ZERO) "+" else "-"
             y = drawRow(
@@ -368,39 +341,40 @@ object PdfDocumentGenerator {
                 paint,
                 boldPaint,
                 y,
+                rowStep = 9f,
             )
         }
 
+        y += 1f
+        canvas.drawLine(margin, y, pageWidth - margin, y, thickLinePaint)
+        y += 10f
+
+        boldPaint.textSize = 8.0f
+        y = drawRow(canvas, "TOTAL", "${CalculationEngine.formatMoney(delivery.finalAmountMxn)} MXN", margin, pageWidth - margin, boldPaint, boldPaint, y, rowStep = 10f)
+        boldPaint.textSize = 5.6f
+        y = drawWrapped(canvas, CalculationEngine.amountInWordsMxn(delivery.finalAmountMxn), boldPaint, margin, y - 3f, contentWidth, Layout.Alignment.ALIGN_NORMAL)
+
         y += 2f
         canvas.drawLine(margin, y, pageWidth - margin, y, thickLinePaint)
-        y += 14f
+        y += 9f
 
-        boldPaint.textSize = 10f
-        y = drawRow(canvas, "TOTAL", "${CalculationEngine.formatMoney(delivery.finalAmountMxn)} MXN", margin, pageWidth - margin, boldPaint, boldPaint, y)
-        boldPaint.textSize = 7f
-        y = drawWrapped(canvas, CalculationEngine.amountInWordsMxn(delivery.finalAmountMxn), boldPaint, margin, y - 4f, contentWidth, Layout.Alignment.ALIGN_NORMAL)
-
-        y += 4f
-        canvas.drawLine(margin, y, pageWidth - margin, y, thickLinePaint)
-        y += 12f
-
-        paint.textSize = 7.5f
-        boldPaint.textSize = 7.5f
-        y = drawRow(canvas, "Pagado / Abono:", "${CalculationEngine.formatMoney(effectivePaidMxn)} MXN", margin, pageWidth - margin, paint, boldPaint, y)
-        paint.textSize = 7f
-        y = drawWrapped(canvas, "Forma de pago: ${PaymentMethod.fromDb(delivery.paymentMethod).label}", paint, margin, y - 4f, contentWidth, Layout.Alignment.ALIGN_NORMAL)
+        paint.textSize = 6.0f
+        boldPaint.textSize = 6.0f
+        y = drawRow(canvas, "Pagado / Abono:", "${CalculationEngine.formatMoney(effectivePaidMxn)} MXN", margin, pageWidth - margin, paint, boldPaint, y, rowStep = 9f)
+        paint.textSize = 5.7f
+        y = drawWrapped(canvas, "Forma de pago: ${PaymentMethod.fromDb(delivery.paymentMethod).label}", paint, margin, y - 3f, contentWidth, Layout.Alignment.ALIGN_NORMAL)
 
         // Barra negra invertida RESTA ENTREGA / LIQUIDADO
-        y += 4f
+        y += 2f
         val barTop = y
-        val barBottom = y + 16f
+        val barBottom = y + 13f
         val fillBlack = Paint().apply {
             color = Color.BLACK
             style = Paint.Style.FILL
         }
         val whiteBold = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
-            textSize = 8f
+            textSize = 6.5f
             typeface = monoBold
         }
         canvas.drawRect(RectF(margin, barTop, pageWidth - margin, barBottom), fillBlack)
@@ -408,25 +382,26 @@ object PdfDocumentGenerator {
             canvas,
             if (delivery.pendingBalanceMxn > 0.0) "RESTA ENTREGA" else "LIQUIDADO",
             "${CalculationEngine.formatMoney(delivery.pendingBalanceMxn)} MXN",
-            margin + 5f,
-            pageWidth - margin - 5f,
+            margin + 4f,
+            pageWidth - margin - 4f,
             whiteBold,
             whiteBold,
-            barTop + 11f,
+            barTop + 9f,
+            rowStep = 9f,
         )
         y = barBottom
 
-        y = drawDashedLine(canvas, margin, pageWidth - margin, y + 7f, dashPaint) + 12f
+        y = drawDashedLine(canvas, margin, pageWidth - margin, y + 4f, dashPaint) + 9f
 
-        boldPaint.textSize = 7.5f
-        y = drawRow(canvas, "Saldo anterior:", "${CalculationEngine.formatMoney(delivery.previousDebtSnapshotMxn)} MXN", margin, pageWidth - margin, boldPaint, boldPaint, y)
-        y = drawRow(canvas, "Esta remisión:", "+${CalculationEngine.formatMoney(delivery.pendingBalanceMxn)} MXN", margin, pageWidth - margin, boldPaint, boldPaint, y)
-        boldPaint.textSize = 8.5f
-        y = drawRow(canvas, "SALDO TOTAL", "${CalculationEngine.formatMoney(currentAccum)} MXN", margin, pageWidth - margin, boldPaint, boldPaint, y + 1f)
+        boldPaint.textSize = 6.0f
+        y = drawRow(canvas, "Saldo anterior:", "${CalculationEngine.formatMoney(delivery.previousDebtSnapshotMxn)} MXN", margin, pageWidth - margin, boldPaint, boldPaint, y, rowStep = 9f)
+        y = drawRow(canvas, "Esta remisión:", "+${CalculationEngine.formatMoney(delivery.pendingBalanceMxn)} MXN", margin, pageWidth - margin, boldPaint, boldPaint, y, rowStep = 9f)
+        boldPaint.textSize = 6.8f
+        y = drawRow(canvas, "SALDO TOTAL", "${CalculationEngine.formatMoney(currentAccum)} MXN", margin, pageWidth - margin, boldPaint, boldPaint, y, rowStep = 9f)
 
         // Solo Crédito (pendiente o liquidado) lleva leyenda + firmabox + Recibí de conformidad
         if (isCredit) {
-            y = drawDashedLine(canvas, margin, pageWidth - margin, y + 4f, dashPaint) + 8f
+            y = drawDashedLine(canvas, margin, pageWidth - margin, y + 2f, dashPaint) + 5f
             val legendText = when {
                 isCancelled -> "Nota cancelada. Las obligaciones de pago y entrega correspondientes fueron revertidas."
                 delivery.pendingBalanceMxn > 0.0 ->
@@ -443,17 +418,17 @@ object PdfDocumentGenerator {
                 else ->
                     "Recibí la mercancía descrita en esta remisión a mi entera satisfacción y cubrí el importe total señalado. Acepto mi firma digitalizada como constancia de recepción."
             }
-            paint.textSize = 6.5f
+            paint.textSize = 5.4f
             y = drawWrapped(canvas, legendText, paint, margin, y, contentWidth, Layout.Alignment.ALIGN_NORMAL)
-            y += 4f
+            y += 2f
 
-            val sigBoxHeight = 56f
+            val sigBoxHeight = 40f
             val sigBoxTop = y
             val sigBoxBottom = y + sigBoxHeight
             canvas.drawRect(RectF(margin, sigBoxTop, pageWidth - margin, sigBoxBottom), thinLinePaint.apply { style = Paint.Style.STROKE })
             if (signatureRaw != null && signatureRaw.width > 0 && signatureRaw.height > 0) {
-                val maxSigW = (contentWidth - 8).toFloat()
-                val maxSigH = sigBoxHeight - 6f
+                val maxSigW = (contentWidth - 6).toFloat()
+                val maxSigH = sigBoxHeight - 4f
                 val ratio = minOf(maxSigW / signatureRaw.width.toFloat(), maxSigH / signatureRaw.height.toFloat())
                 val drawW = (signatureRaw.width * ratio).toInt().coerceAtLeast(1)
                 val drawH = (signatureRaw.height * ratio).toInt().coerceAtLeast(1)
@@ -462,20 +437,20 @@ object PdfDocumentGenerator {
                 val top = sigBoxTop + (sigBoxHeight - drawH) / 2f
                 canvas.drawBitmap(scaledSig, left, top, null)
             }
-            y = sigBoxBottom + 6f
+            y = sigBoxBottom + 3f
 
-            paint.textSize = 7f
+            paint.textSize = 5.6f
             y = drawWrapped(canvas, "Recibí de conformidad", paint, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
-            boldPaint.textSize = 7.5f
+            boldPaint.textSize = 6.0f
             y = drawWrapped(canvas, delivery.clientName, boldPaint, margin, y - 2f, contentWidth, Layout.Alignment.ALIGN_CENTER)
         }
 
-        y = drawDashedLine(canvas, margin, pageWidth - margin, y + 6f, dashPaint) + 8f
-        boldPaint.textSize = 8f
+        y = drawDashedLine(canvas, margin, pageWidth - margin, y + 3f, dashPaint) + 5f
+        boldPaint.textSize = 6.4f
         y = drawWrapped(canvas, "¡Gracias por su preferencia!", boldPaint, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
-        paint.textSize = 7f
-        y = drawWrapped(canvas, "Calidad y frescura en cada huevo", paint, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
-        return y + 12f
+        paint.textSize = 5.6f
+        y = drawWrapped(canvas, "Calidad y frescura en cada huevo", paint, margin, y - 1f, contentWidth, Layout.Alignment.ALIGN_CENTER)
+        return y + 6f
     }
 
     fun generateDailyClosingPdf(
@@ -559,7 +534,13 @@ object PdfDocumentGenerator {
             if (y > pageHeight - 60f) break
             val statusSuffix = if (d.status == "CANCELADA") " [CANCELADO]" else ""
             val line1 = "${d.folio}$statusSuffix — ${d.clientName}"
-            val line2 = "  ${CalculationEngine.formatExactBoxes(d.boxes)} cjs | ${CalculationEngine.formatExactWeight(d.netWeightKg)} kg | ${PaymentMethod.fromDb(d.paymentMethod).label} | ${CalculationEngine.formatMoney(d.finalAmountMxn)} MXN"
+            val sugarKg = d.sugarSacks * d.sugarSackWeightKg
+            val totalKg = d.netWeightKg + sugarKg
+            val qtyParts = buildList {
+                if (d.boxes > 0.0) add("${CalculationEngine.formatExactBoxes(d.boxes)} cjs")
+                if (d.sugarSacks > 0.0) add("${CalculationEngine.formatExactBoxes(d.sugarSacks)} bto azúcar")
+            }.joinToString(" + ").ifBlank { "0 cjs" }
+            val line2 = "  $qtyParts | ${CalculationEngine.formatExactWeight(totalKg)} kg | ${PaymentMethod.fromDb(d.paymentMethod).label} | ${CalculationEngine.formatMoney(d.finalAmountMxn)} MXN"
             canvas.drawText(line1.take(80), margin, y, boldPaint)
             y += 13f
             canvas.drawText(line2.take(contentWidth), margin, y, bodyPaint)
@@ -574,8 +555,8 @@ object PdfDocumentGenerator {
 
     internal fun measureTicketHeight(
         context: Context,
-        pageWidth: Int = 220,
-        margin: Float = 12f,
+        pageWidth: Int = TICKET_PAGE_WIDTH_PT,
+        margin: Float = 8f,
         delivery: DeliveryEntity,
         settings: BusinessSettingsEntity,
         client: ClientEntity?,
@@ -585,10 +566,28 @@ object PdfDocumentGenerator {
             if (sigFile.exists()) BitmapFactory.decodeFile(sigFile.absolutePath) else null
         },
     ): Int {
+        // El comprobante impreso en PDF siempre mide exactamente 60mm x 130mm (170 x 369 pt)
+        @Suppress("UNUSED_EXPRESSION")
+        measureNaturalTicketHeight(context, pageWidth, margin, delivery, settings, client, logoRaw, signatureRaw)
+        return TICKET_PAGE_HEIGHT_PT
+    }
+
+    internal fun measureNaturalTicketHeight(
+        context: Context,
+        pageWidth: Int = TICKET_PAGE_WIDTH_PT,
+        margin: Float = 8f,
+        delivery: DeliveryEntity,
+        settings: BusinessSettingsEntity,
+        client: ClientEntity?,
+        logoRaw: Bitmap? = BitmapFactory.decodeResource(context.resources, R.drawable.img_ticket_logo),
+        signatureRaw: Bitmap? = delivery.signaturePath?.let { path ->
+            val sigFile = File(path)
+            if (sigFile.exists()) BitmapFactory.decodeFile(sigFile.absolutePath) else null
+        },
+    ): Float {
         val picture = android.graphics.Picture()
         val recCanvas = picture.beginRecording(pageWidth, 4000)
-        val measured = renderTicketToCanvas(
-            context = context,
+        val measured = renderTicketNaturalToCanvas(
             canvas = recCanvas,
             pageWidth = pageWidth,
             margin = margin,
@@ -599,7 +598,7 @@ object PdfDocumentGenerator {
             signatureRaw = signatureRaw,
         )
         picture.endRecording()
-        return kotlin.math.ceil(measured.toDouble()).toInt().coerceAtLeast(480)
+        return measured
     }
 
     private fun drawDashedLine(
@@ -649,14 +648,15 @@ object PdfDocumentGenerator {
         leftPaint: Paint,
         rightPaint: Paint,
         y: Float,
+        rowStep: Float = 12f,
+        leftMaxLen: Int = 28,
     ): Float {
-        val leftMaxLen = 22
         val safeLeft = if (left.length > leftMaxLen) left.take(leftMaxLen - 1) + "…" else left
         val rightMaxLen = 26
         val safeRight = if (right.length > rightMaxLen) right.take(rightMaxLen - 1) + "…" else right
         canvas.drawText(safeLeft, leftX, y, leftPaint)
         val rightCopy = Paint(rightPaint).apply { textAlign = Paint.Align.RIGHT }
         canvas.drawText(safeRight, rightX, y, rightCopy)
-        return y + 12f
+        return y + rowStep
     }
 }

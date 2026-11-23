@@ -15,6 +15,8 @@ import com.example.data.local.entity.DeliveryEntity
 import com.example.data.local.entity.EggPurchaseEntity
 import com.example.data.local.entity.InventoryBrandEntity
 import com.example.data.local.entity.ReminderEntity
+import com.example.data.local.entity.SugarInventoryEntity
+import com.example.data.local.entity.SugarPurchaseEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -75,6 +77,25 @@ interface HyhDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertInventoryBrand(item: InventoryBrandEntity)
+
+    // --- Sugar Purchases & Inventory ---
+    @Query("SELECT * FROM sugar_purchases ORDER BY purchaseDateMillis DESC, id DESC")
+    fun observeSugarPurchases(): Flow<List<SugarPurchaseEntity>>
+
+    @Query("SELECT * FROM sugar_purchases ORDER BY purchaseDateMillis DESC, id DESC")
+    suspend fun getAllSugarPurchasesOnce(): List<SugarPurchaseEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertSugarPurchase(purchase: SugarPurchaseEntity): Long
+
+    @Query("SELECT * FROM sugar_inventory WHERE id = 1")
+    fun observeSugarInventory(): Flow<SugarInventoryEntity?>
+
+    @Query("SELECT * FROM sugar_inventory WHERE id = 1")
+    suspend fun getSugarInventoryOnce(): SugarInventoryEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertSugarInventory(inventory: SugarInventoryEntity)
 
     // --- Deliveries ---
     @Query("SELECT * FROM deliveries ORDER BY dateMillis DESC, id DESC")
@@ -180,4 +201,10 @@ interface HyhDao {
 
     @Query("DELETE FROM clients")
     suspend fun clearClients()
+
+    @Query("DELETE FROM sugar_purchases")
+    suspend fun clearSugarPurchases()
+
+    @Query("DELETE FROM sugar_inventory")
+    suspend fun clearSugarInventory()
 }

@@ -411,11 +411,11 @@ fun ConfiguracionScreen(
                 }
             }
 
-            // Impresora Térmica 48 mm (Bluetooth y USB OTG)
+            // Impresora Térmica 60 mm (Bluetooth y USB OTG)
             item {
                 AuroraCard {
                     Text(
-                        text = "Impresora Térmica 48 mm",
+                        text = "Impresora Térmica 60 mm",
                         style = MaterialTheme.typography.titleMedium,
                         color = OnSurface,
                     )
@@ -493,7 +493,7 @@ fun ConfiguracionScreen(
                             testTag = "scan_printers_button",
                         )
                         AuroraOutlinedButton(
-                            text = "Prueba 48mm",
+                            text = "Prueba 60mm",
                             icon = Icons.Default.Print,
                             onClick = onTestPrinter,
                             accentColor = Secondary,

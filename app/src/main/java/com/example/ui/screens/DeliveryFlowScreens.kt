@@ -107,6 +107,9 @@ fun NuevaEntregaScreen(
     onUpdateModality: (DeliveryModality) -> Unit,
     onUpdateWeight: (String) -> Unit,
     onUpdatePricePerKg: (String) -> Unit,
+    onUpdateSugarSacks: (String) -> Unit,
+    onUpdateSugarWeightPerSack: (String) -> Unit,
+    onUpdateSugarPricePerSack: (String) -> Unit,
     onAddBoxItem: () -> Unit,
     onRemoveBoxItem: (Long) -> Unit,
     onContinueToPayment: () -> Unit,
@@ -126,10 +129,23 @@ fun NuevaEntregaScreen(
         CalculationEngine.parsePositiveDecimal(draft.pricePerKgInput)
     }
 
-    val calc: DeliveryCalculationResult = remember(draft.weighedItems, typedPriceBd) {
-        CalculationEngine.calculateDeliveryFromItems(
+    val sugarSummary = remember(
+        draft.sugarSacksInput,
+        draft.sugarWeightPerSackInput,
+        draft.sugarPricePerSackInput,
+    ) {
+        CalculationEngine.calculateSugarSummary(
+            sacksInput = draft.sugarSacksInput,
+            weightPerSackInput = draft.sugarWeightPerSackInput,
+            pricePerSackInput = draft.sugarPricePerSackInput,
+        )
+    }
+
+    val calc: DeliveryCalculationResult = remember(draft.weighedItems, typedPriceBd, sugarSummary) {
+        CalculationEngine.calculateDeliveryWithSugar(
             items = draft.weighedItems,
             pricePerKg = typedPriceBd,
+            sugarSummary = sugarSummary,
         )
     }
 
@@ -554,7 +570,88 @@ fun NuevaEntregaScreen(
                 }
             }
 
-            // 5. Cálculo de Importe, Desglose por Marca y Redondeo Oficial MXN
+            // 4b. Bultos de Azúcar (Opcional, sin valores predeterminados ni botones rápidos)
+            AuroraCard {
+                Text(
+                    text = "BULTOS DE AZÚCAR (OPCIONAL)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Secondary,
+                )
+                Spacer(Modifier.height(8.dp))
+                AuroraTextField(
+                    value = draft.sugarSacksInput,
+                    onValueChange = onUpdateSugarSacks,
+                    label = "Bultos de azúcar",
+                    suffixText = "bto",
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    testTag = "delivery_sugar_sacks_input",
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    AuroraTextField(
+                        value = draft.sugarWeightPerSackInput,
+                        onValueChange = onUpdateSugarWeightPerSack,
+                        label = "Peso por bulto",
+                        suffixText = "kg",
+                        leadingIcon = Icons.Default.Scale,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        modifier = Modifier.weight(1f),
+                        testTag = "delivery_sugar_weight_input",
+                    )
+                    AuroraTextField(
+                        value = draft.sugarPricePerSackInput,
+                        onValueChange = onUpdateSugarPricePerSack,
+                        label = "Precio por bulto",
+                        suffixText = "MXN",
+                        leadingIcon = Icons.Default.AttachMoney,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        modifier = Modifier.weight(1f),
+                        testTag = "delivery_sugar_price_input",
+                    )
+                }
+                if (sugarSummary.isPartialError) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "Completa bultos, peso por bulto y precio por bulto (o deja los 3 campos vacíos).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Error,
+                    )
+                } else if (sugarSummary.isPresent) {
+                    Spacer(Modifier.height(10.dp))
+                    Surface(
+                        color = SurfaceContainerLowest,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "Azúcar: ${CalculationEngine.formatExactBoxes(sugarSummary.sacks)} bto • ${CalculationEngine.formatExactWeight(sugarSummary.totalWeightKg)} kg",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = OnSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                text = "${CalculationEngine.formatMoney(sugarSummary.subtotalMxn.setScale(2, RoundingMode.HALF_UP))} MXN",
+                                fontFamily = SpaceMonoFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                color = Secondary,
+                                modifier = Modifier.testTag("calculated_sugar_subtotal_text"),
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 5. Cálculo de Importe, Desglose por Marca / Azúcar y Redondeo Oficial MXN
             val brandBreakdown = remember(draft.weighedItems, selectedBrandName, typedPriceBd) {
                 CalculationEngine.summarizeBrandBreakdown(
                     items = draft.weighedItems,
@@ -563,9 +660,9 @@ fun NuevaEntregaScreen(
                 )
             }
             AuroraCard {
-                if (brandBreakdown.isNotEmpty()) {
+                if (brandBreakdown.isNotEmpty() || sugarSummary.isPresent) {
                     Text(
-                        text = "DESGLOSE POR MARCA Y PRECIO",
+                        text = "DESGLOSE POR MARCA Y CONCEPTOS",
                         style = MaterialTheme.typography.labelSmall,
                         color = Secondary,
                     )
@@ -595,17 +692,65 @@ fun NuevaEntregaScreen(
                             )
                         }
                     }
+                    if (sugarSummary.isPresent) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp)
+                                .testTag("sugar_breakdown_row"),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "Azúcar (${CalculationEngine.formatExactBoxes(sugarSummary.sacks)} bto • ${CalculationEngine.formatExactWeight(sugarSummary.totalWeightKg)} kg × ${CalculationEngine.formatMoney(sugarSummary.pricePerSackMxn)}/bto)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = OnSurfaceVariant,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 8.dp),
+                            )
+                            Text(
+                                text = CalculationEngine.formatMoney(sugarSummary.subtotalMxn.setScale(2, RoundingMode.HALF_UP)),
+                                fontFamily = SpaceMonoFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                color = OnSurface,
+                            )
+                        }
+                    }
                     HorizontalDivider(
                         color = Primary.copy(alpha = 0.14f),
                         modifier = Modifier.padding(vertical = 8.dp),
                     )
+                }
+                if (sugarSummary.isPresent) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = "Peso neto total (Huevo + Azúcar)",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = OnSurfaceVariant,
+                        )
+                        Text(
+                            text = "${CalculationEngine.formatExactWeight(calc.combinedNetWeightKg)} kg",
+                            fontFamily = SpaceMonoFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            color = Primary,
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Text(
-                        text = if (brandBreakdown.size > 1) "Importe exacto (suma por marca)" else "Importe exacto (Neto × Precio/kg)",
+                        text = if (brandBreakdown.size > 1 || sugarSummary.isPresent) {
+                            "Importe exacto integrado"
+                        } else {
+                            "Importe exacto (Neto × Precio/kg)"
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = OnSurfaceVariant,
                     )
@@ -785,10 +930,22 @@ fun PagoScreen(
     val typedPriceBd = remember(draft.pricePerKgInput) {
         CalculationEngine.parsePositiveDecimal(draft.pricePerKgInput)
     }
-    val calc = remember(draft.weighedItems, typedPriceBd) {
-        CalculationEngine.calculateDeliveryFromItems(
+    val sugarSummary = remember(
+        draft.sugarSacksInput,
+        draft.sugarWeightPerSackInput,
+        draft.sugarPricePerSackInput,
+    ) {
+        CalculationEngine.calculateSugarSummary(
+            sacksInput = draft.sugarSacksInput,
+            weightPerSackInput = draft.sugarWeightPerSackInput,
+            pricePerSackInput = draft.sugarPricePerSackInput,
+        )
+    }
+    val calc = remember(draft.weighedItems, typedPriceBd, sugarSummary) {
+        CalculationEngine.calculateDeliveryWithSugar(
             items = draft.weighedItems,
             pricePerKg = typedPriceBd,
+            sugarSummary = sugarSummary,
         )
     }
     val finalBd = calc.finalAmountMxn
@@ -834,17 +991,27 @@ fun PagoScreen(
                     color = OnSurface,
                 )
                 Spacer(Modifier.height(4.dp))
-                val summaryHeader = if (brandBreakdown.size > 1) {
-                    "${CalculationEngine.formatExactBoxes(calc.boxesDecimal)} cajas • ${CalculationEngine.formatExactWeight(calc.netWeightKg)} kg netos • $brandSummary"
-                } else {
-                    "${CalculationEngine.formatExactBoxes(calc.boxesDecimal)} cajas • ${CalculationEngine.formatExactWeight(calc.netWeightKg)} kg netos • ${CalculationEngine.formatMoney(calc.pricePerKg)}/kg • $brandSummary"
-                }
+                val summaryHeader = buildList {
+                    if (draft.weighedItems.isNotEmpty()) {
+                        add("${CalculationEngine.formatExactBoxes(calc.boxesDecimal)} cajas")
+                    }
+                    if (sugarSummary.isPresent) {
+                        add("${CalculationEngine.formatExactBoxes(sugarSummary.sacks)} bto azúcar")
+                    }
+                    add("${CalculationEngine.formatExactWeight(calc.combinedNetWeightKg)} kg netos")
+                    if (draft.weighedItems.isNotEmpty()) {
+                        if (brandBreakdown.size <= 1) {
+                            add("${CalculationEngine.formatMoney(calc.pricePerKg)}/kg")
+                        }
+                        add(brandSummary)
+                    }
+                }.joinToString(" • ")
                 Text(
                     text = summaryHeader,
                     style = MaterialTheme.typography.bodyMedium,
                     color = OnSurfaceVariant,
                 )
-                if (brandBreakdown.size > 1) {
+                if (brandBreakdown.size > 1 || (brandBreakdown.isNotEmpty() && sugarSummary.isPresent)) {
                     Spacer(Modifier.height(8.dp))
                     HorizontalDivider(color = Primary.copy(alpha = 0.14f))
                     Spacer(Modifier.height(6.dp))
@@ -863,6 +1030,27 @@ fun PagoScreen(
                             )
                             Text(
                                 text = CalculationEngine.formatMoney(b.subtotalMxn.setScale(2, RoundingMode.HALF_UP)),
+                                fontFamily = SpaceMonoFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                color = OnSurface,
+                            )
+                        }
+                    }
+                    if (sugarSummary.isPresent) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                text = "Azúcar • ${CalculationEngine.formatExactBoxes(sugarSummary.sacks)} bto (${CalculationEngine.formatExactWeight(sugarSummary.totalWeightKg)} kg)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Secondary,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                text = CalculationEngine.formatMoney(sugarSummary.subtotalMxn.setScale(2, RoundingMode.HALF_UP)),
                                 fontFamily = SpaceMonoFontFamily,
                                 fontWeight = FontWeight.Bold,
                                 color = OnSurface,

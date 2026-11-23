@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -55,16 +56,16 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Plantilla visual exacta de Ticket Térmico 48 mm (384 puntos) basada en Vista_previa_ticket_con_logo / Ticket_48mm.
- * Cumple reglas del Documento Maestro:
+ * Plantilla visual exacta de Ticket Térmico 60 mm x 130 mm.
  * - Logotipo 1-bit con nombre comercial integrado (sin repetir el nombre como texto suelto).
- * - Saldo pendiente y deuda total en negritas.
+ * - Sin desglose detallado de cajas individuales, tara ni peso bruto total.
+ * - Muestra peso neto total, saldo total por marca (y azúcar si aplica), Subtotal y TOTAL.
  * - Contado: sin firma ni leyenda de compromiso.
  * - Crédito: incluye firma digital escalada y leyenda de compromiso de pago.
  * - Cancelado: sello CANCELADO prominente en negritas.
  */
 @Composable
-fun ThermalTicket48mmView(
+fun ThermalTicket60mmView(
     delivery: DeliveryEntity,
     client: ClientEntity?,
     settings: BusinessSettingsEntity,
@@ -87,22 +88,30 @@ fun ThermalTicket48mmView(
     val roundingDiff = finalBd.subtract(rawSubtotal).setScale(2, RoundingMode.HALF_UP)
 
     val weighedItems = CalculationEngine.parseWeighedItemsJson(delivery.itemsSnapshotJson)
-    val modalityLabel = CalculationEngine.resolveModalityLabel(delivery.modality, weighedItems)
-    val brandBreakdown = CalculationEngine.summarizeBrandBreakdown(
-        items = weighedItems,
-        fallbackBrand = delivery.brand,
-        fallbackPricePerKg = BigDecimal.valueOf(delivery.pricePerKg),
-    )
-    val hasMultiBrandOrPrice = brandBreakdown.size > 1
-    val headerBrandSummary = CalculationEngine.resolveBrandSummaryLabel(delivery.brand, weighedItems)
-    val allWeightedHalf = weighedItems.isNotEmpty() &&
-        weighedItems.all { it.modality == DeliveryModality.MEDIA_CAJA_PESADA }
-    val secondColHeader = if (weighedItems.isEmpty()) {
-        if (DeliveryModality.fromDb(delivery.modality) == DeliveryModality.MEDIA_CAJA_PESADA) "ING.kg" else "BRUTO"
-    } else if (allWeightedHalf) {
-        "ING.kg"
+    val hasEggs = delivery.boxes > 0.0 || weighedItems.isNotEmpty()
+    val hasSugar = delivery.sugarSacks > 0.0
+    val sugarWeightKg = if (hasSugar) {
+        BigDecimal.valueOf(delivery.sugarSacks).multiply(BigDecimal.valueOf(delivery.sugarSackWeightKg))
     } else {
-        "BRUTO"
+        BigDecimal.ZERO
+    }
+    val totalNetWeightKg = BigDecimal.valueOf(delivery.netWeightKg).add(sugarWeightKg)
+    val modalityLabel = CalculationEngine.resolveModalityLabel(delivery.modality, weighedItems)
+    val brandBreakdown = if (hasEggs) {
+        CalculationEngine.summarizeBrandBreakdown(
+            items = weighedItems,
+            fallbackBrand = delivery.brand,
+            fallbackPricePerKg = BigDecimal.valueOf(delivery.pricePerKg),
+            fallbackBoxes = BigDecimal.valueOf(delivery.boxes),
+            fallbackNetWeightKg = BigDecimal.valueOf(delivery.netWeightKg),
+        )
+    } else {
+        emptyList()
+    }
+    val headerBrandSummary = if (hasEggs) {
+        CalculationEngine.resolveBrandSummaryLabel(delivery.brand, weighedItems)
+    } else {
+        ""
     }
     val statusText = when {
         isCancelled -> "CANCELADO"
@@ -113,7 +122,7 @@ fun ThermalTicket48mmView(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .widthIn(max = 350.dp)
+            .widthIn(max = 360.dp)
             .testTag("thermal_ticket_preview"),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -129,8 +138,10 @@ fun ThermalTicket48mmView(
             Image(
                 painter = painterResource(R.drawable.img_ticket_logo),
                 contentDescription = "Logotipo térmico H y H HUEVOS",
-                contentScale = ContentScale.FillWidth,
-                modifier = Modifier.fillMaxWidth(),
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 110.dp),
             )
 
             Spacer(Modifier.height(6.dp))
@@ -251,9 +262,14 @@ fun ThermalTicket48mmView(
             DashedTicketDivider()
             Spacer(Modifier.height(8.dp))
 
-            // Producto y tabla de pesaje exacta (Bruto / Tara / Neto)
+            // Resumen por marca (y azúcar si aplica), sin tabla ni desglose de tara/cajas/bruto
+            val productHeader = when {
+                hasEggs && hasSugar -> "$headerBrandSummary • $modalityLabel + Azúcar"
+                hasSugar -> "Azúcar (Bultos)"
+                else -> "$headerBrandSummary • $modalityLabel"
+            }
             Text(
-                text = "$headerBrandSummary • $modalityLabel",
+                text = productHeader,
                 fontFamily = SpaceMonoFontFamily,
                 fontSize = 9.5.sp,
                 color = ThermalInkDark,
@@ -261,146 +277,22 @@ fun ThermalTicket48mmView(
             )
             Spacer(Modifier.height(6.dp))
 
-            // Encabezado de tabla de 4 columnas
-            Row(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    if (weighedItems.isNotEmpty()) "No." else "CANT",
-                    fontFamily = SpaceMonoFontFamily,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 9.sp,
-                    color = ThermalInkDark,
-                    modifier = Modifier.weight(0.8f),
+            brandBreakdown.forEach { b ->
+                TicketPairRow(
+                    label = "${b.brand} (${CalculationEngine.formatExactWeight(b.netWeightKg)} kg × ${CalculationEngine.formatMoney(b.pricePerKg)}):",
+                    value = CalculationEngine.formatMoney(b.subtotalMxn.setScale(2, RoundingMode.HALF_UP)),
+                    boldValue = true,
+                    fontSize = 9,
                 )
-                Text(
-                    secondColHeader,
-                    fontFamily = SpaceMonoFontFamily,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 9.sp,
-                    color = ThermalInkDark,
-                    textAlign = TextAlign.End,
-                    modifier = Modifier.weight(1f),
+            }
+            if (hasSugar) {
+                TicketPairRow(
+                    label = "Azúcar (${CalculationEngine.formatExactBoxes(delivery.sugarSacks)} bto × ${CalculationEngine.formatExactWeight(delivery.sugarSackWeightKg)} kg • ${CalculationEngine.formatMoney(delivery.sugarPricePerSackMxn)}/bto):",
+                    value = CalculationEngine.formatMoney(delivery.sugarSubtotalMxn),
+                    boldValue = true,
+                    fontSize = 9,
                 )
-                Text("TARA", fontFamily = SpaceMonoFontFamily, fontWeight = FontWeight.Bold, fontSize = 9.sp, color = ThermalInkDark, textAlign = TextAlign.End, modifier = Modifier.weight(0.9f))
-                Text("NETO kg", fontFamily = SpaceMonoFontFamily, fontWeight = FontWeight.Bold, fontSize = 9.sp, color = ThermalInkDark, textAlign = TextAlign.End, modifier = Modifier.weight(1.1f))
             }
-            HorizontalDivider(color = ThermalInkDark, thickness = 1.dp, modifier = Modifier.padding(vertical = 3.dp))
-            if (weighedItems.isNotEmpty()) {
-                var prevGroupKey: Pair<String, BigDecimal>? = null
-                weighedItems.forEachIndexed { idx, item ->
-                    if (hasMultiBrandOrPrice) {
-                        val effBrand = item.brand.trim().ifBlank { delivery.brand.ifBlank { "General" } }
-                        val effPrice = (if (item.pricePerKg > BigDecimal.ZERO) item.pricePerKg else BigDecimal.valueOf(delivery.pricePerKg))
-                            .stripTrailingZeros()
-                        val groupKey = effBrand to effPrice
-                        if (groupKey != prevGroupKey) {
-                            prevGroupKey = groupKey
-                            Text(
-                                text = "$effBrand (${CalculationEngine.formatMoney(effPrice)}/kg)",
-                                fontFamily = SpaceMonoFontFamily,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 8.5.sp,
-                                color = ThermalInkDark,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = if (idx > 0) 3.dp else 0.dp, bottom = 1.dp),
-                            )
-                        }
-                    }
-                    val numLabel = buildString {
-                        append(String.format(Locale.US, "%02d", idx + 1))
-                        if (item.modality != DeliveryModality.CAJA_COMPLETA) {
-                            append(" ½")
-                        }
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 1.dp),
-                    ) {
-                        Text(
-                            text = numLabel,
-                            fontFamily = SpaceMonoFontFamily,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 9.5.sp,
-                            color = ThermalInkDark,
-                            modifier = Modifier.weight(0.8f),
-                        )
-                        Text(
-                            text = CalculationEngine.formatExactWeight(item.inputWeightKg),
-                            fontFamily = SpaceMonoFontFamily,
-                            fontSize = 9.5.sp,
-                            color = ThermalInkDark,
-                            textAlign = TextAlign.End,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Text(
-                            text = CalculationEngine.formatExactWeight(item.tareDeductionKg),
-                            fontFamily = SpaceMonoFontFamily,
-                            fontSize = 9.5.sp,
-                            color = ThermalInkDark,
-                            textAlign = TextAlign.End,
-                            modifier = Modifier.weight(0.9f),
-                        )
-                        Text(
-                            text = CalculationEngine.formatExactWeight(item.netWeightKg),
-                            fontFamily = SpaceMonoFontFamily,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 9.5.sp,
-                            color = ThermalInkDark,
-                            textAlign = TextAlign.End,
-                            modifier = Modifier.weight(1.1f),
-                        )
-                    }
-                }
-            } else {
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = CalculationEngine.formatExactBoxes(delivery.boxes),
-                        fontFamily = SpaceMonoFontFamily,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 10.sp,
-                        color = ThermalInkDark,
-                        modifier = Modifier.weight(0.8f),
-                    )
-                    Text(
-                        text = CalculationEngine.formatExactWeight(delivery.grossWeightKg),
-                        fontFamily = SpaceMonoFontFamily,
-                        fontSize = 10.sp,
-                        color = ThermalInkDark,
-                        textAlign = TextAlign.End,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        text = CalculationEngine.formatExactWeight(delivery.tareDeductionKg),
-                        fontFamily = SpaceMonoFontFamily,
-                        fontSize = 10.sp,
-                        color = ThermalInkDark,
-                        textAlign = TextAlign.End,
-                        modifier = Modifier.weight(0.9f),
-                    )
-                    Text(
-                        text = CalculationEngine.formatExactWeight(delivery.netWeightKg),
-                        fontFamily = SpaceMonoFontFamily,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 10.sp,
-                        color = ThermalInkDark,
-                        textAlign = TextAlign.End,
-                        modifier = Modifier.weight(1.1f),
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-            DashedTicketDivider()
-            Spacer(Modifier.height(6.dp))
-
-            TicketPairRow("Cajas:", CalculationEngine.formatExactBoxes(delivery.boxes), boldValue = true)
-            TicketPairRow("Tara total:", "${CalculationEngine.formatExactWeight(delivery.tareDeductionKg)} kg", boldValue = true)
-            TicketPairRow(
-                if (secondColHeader == "ING.kg") "Peso ingresado:" else "Bruto total:",
-                "${CalculationEngine.formatExactWeight(delivery.grossWeightKg)} kg",
-                boldValue = true,
-            )
 
             Spacer(Modifier.height(6.dp))
             // Recuadro destacado KILOS NETOS
@@ -422,7 +314,7 @@ fun ThermalTicket48mmView(
                         color = ThermalInkDark,
                     )
                     Text(
-                        text = "${CalculationEngine.formatExactWeight(delivery.netWeightKg)} kg",
+                        text = "${CalculationEngine.formatExactWeight(totalNetWeightKg)} kg",
                         fontFamily = SpaceMonoFontFamily,
                         fontWeight = FontWeight.Bold,
                         fontSize = 11.5.sp,
@@ -432,18 +324,6 @@ fun ThermalTicket48mmView(
             }
 
             Spacer(Modifier.height(6.dp))
-            if (hasMultiBrandOrPrice) {
-                brandBreakdown.forEach { b ->
-                    TicketPairRow(
-                        label = "${b.brand} (${CalculationEngine.formatExactWeight(b.netWeightKg)} kg × ${CalculationEngine.formatMoney(b.pricePerKg)}):",
-                        value = CalculationEngine.formatMoney(b.subtotalMxn.setScale(2, RoundingMode.HALF_UP)),
-                        boldValue = true,
-                        fontSize = 9,
-                    )
-                }
-            } else {
-                TicketPairRow("Precio por kilo:", CalculationEngine.formatMoney(delivery.pricePerKg), boldValue = true)
-            }
             TicketPairRow("Subtotal:", CalculationEngine.formatMoney(rawSubtotal), boldValue = true)
             if (roundingDiff.compareTo(BigDecimal.ZERO) != 0) {
                 val sign = if (roundingDiff > BigDecimal.ZERO) "+" else "-"

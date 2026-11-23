@@ -47,7 +47,7 @@ class ThermalPrinterManager(private val context: Context) {
     companion object {
         private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
         private const val USB_PERMISSION_ACTION = "com.aistudio.hyhhuevos.qmzpkt.USB_PERMISSION"
-        private const val LINE_WIDTH_CHARS = 32
+        private const val LINE_WIDTH_CHARS = 38
     }
 
     fun hasBluetoothPermission(): Boolean {
@@ -109,10 +109,10 @@ class ThermalPrinterManager(private val context: Context) {
             out.write(asciiLine(settings.businessName))
             out.write(byteArrayOf(0x1B, 0x45, 0x00)) // Bold OFF
             out.write(asciiLine(settings.slogan))
-            out.write(asciiLine("--------------------------------"))
-            out.write(asciiLine("PRUEBA DE IMPRESION 48MM"))
+            out.write(asciiLine("--------------------------------------"))
+            out.write(asciiLine("PRUEBA DE IMPRESION 60MM"))
             out.write(asciiLine("CONEXION VERIFICADA"))
-            out.write(asciiLine("--------------------------------"))
+            out.write(asciiLine("--------------------------------------"))
             out.write(byteArrayOf(0x0A, 0x0A, 0x0A))
             val bytes = out.toByteArray()
             when (settings.printerType) {
@@ -204,22 +204,30 @@ class ThermalPrinterManager(private val context: Context) {
         val isCancelled = delivery.status == "CANCELADA"
         val isCredit = delivery.paymentMethod == PaymentMethod.CREDITO.dbValue
         val weighedItems = CalculationEngine.parseWeighedItemsJson(delivery.itemsSnapshotJson)
-        val modalityLabel = CalculationEngine.resolveModalityLabel(delivery.modality, weighedItems)
-        val brandBreakdown = CalculationEngine.summarizeBrandBreakdown(
-            items = weighedItems,
-            fallbackBrand = delivery.brand,
-            fallbackPricePerKg = BigDecimal.valueOf(delivery.pricePerKg),
-        )
-        val hasMultiBrandOrPrice = brandBreakdown.size > 1
-        val headerBrandSummary = CalculationEngine.resolveBrandSummaryLabel(delivery.brand, weighedItems)
-        val allWeightedHalf = weighedItems.isNotEmpty() &&
-            weighedItems.all { it.modality == DeliveryModality.MEDIA_CAJA_PESADA }
-        val secondColHeader = if (weighedItems.isEmpty()) {
-            if (DeliveryModality.fromDb(delivery.modality) == DeliveryModality.MEDIA_CAJA_PESADA) "ING.kg" else "BRUTO"
-        } else if (allWeightedHalf) {
-            "ING.kg"
+        val hasEggs = delivery.boxes > 0.0 || weighedItems.isNotEmpty()
+        val hasSugar = delivery.sugarSacks > 0.0
+        val sugarWeightKg = if (hasSugar) {
+            BigDecimal.valueOf(delivery.sugarSacks).multiply(BigDecimal.valueOf(delivery.sugarSackWeightKg))
         } else {
-            "BRUTO"
+            BigDecimal.ZERO
+        }
+        val totalNetWeightKg = BigDecimal.valueOf(delivery.netWeightKg).add(sugarWeightKg)
+        val modalityLabel = CalculationEngine.resolveModalityLabel(delivery.modality, weighedItems)
+        val brandBreakdown = if (hasEggs) {
+            CalculationEngine.summarizeBrandBreakdown(
+                items = weighedItems,
+                fallbackBrand = delivery.brand,
+                fallbackPricePerKg = BigDecimal.valueOf(delivery.pricePerKg),
+                fallbackBoxes = BigDecimal.valueOf(delivery.boxes),
+                fallbackNetWeightKg = BigDecimal.valueOf(delivery.netWeightKg),
+            )
+        } else {
+            emptyList()
+        }
+        val headerBrandSummary = if (hasEggs) {
+            CalculationEngine.resolveBrandSummaryLabel(delivery.brand, weighedItems)
+        } else {
+            ""
         }
         val rawSubtotal = BigDecimal.valueOf(delivery.rawAmountMxn).setScale(2, RoundingMode.HALF_UP)
         val finalBd = BigDecimal.valueOf(delivery.finalAmountMxn).setScale(2, RoundingMode.HALF_UP)
@@ -238,16 +246,16 @@ class ThermalPrinterManager(private val context: Context) {
         out.write(byteArrayOf(0x1B, 0x40)) // Init
         out.write(byteArrayOf(0x1B, 0x61, 0x01)) // Center
 
-        // Logo térmico 1-bit de 384 dots (48mm exactos)
+        // Logo térmico 1-bit de 432 dots (formato 60mm)
         BitmapFactory.decodeResource(context.resources, R.drawable.img_ticket_logo)?.let { bmp ->
-            out.write(bitmapToEscPosRaster(bmp, maxWidthPx = 384))
+            out.write(bitmapToEscPosRaster(bmp, maxWidthPx = 432))
         }
 
         if (settings.address.isNotBlank()) {
             wrapAsciiLines(settings.address).forEach { out.write(asciiLine(it)) }
         }
         if (settings.phone.isNotBlank()) out.write(asciiLine("Tel: ${settings.phone}"))
-        out.write(asciiLine("================================"))
+        out.write(asciiLine("======================================"))
 
         if (isCancelled) {
             out.write(byteArrayOf(0x1B, 0x45, 0x01))
@@ -255,7 +263,7 @@ class ThermalPrinterManager(private val context: Context) {
             out.write(asciiLine("CANCELADO"))
             out.write(byteArrayOf(0x1D, 0x21, 0x00))
             out.write(byteArrayOf(0x1B, 0x45, 0x00))
-            out.write(asciiLine("--------------------------------"))
+            out.write(asciiLine("--------------------------------------"))
         }
 
         out.write(byteArrayOf(0x1B, 0x45, 0x01))
@@ -273,7 +281,7 @@ class ThermalPrinterManager(private val context: Context) {
         wrapAsciiLines(statusText).forEach { out.write(asciiLine(it)) }
         out.write(byteArrayOf(0x1B, 0x45, 0x00))
         out.write(byteArrayOf(0x1B, 0x61, 0x00)) // Left
-        out.write(asciiLine("--------------------------------"))
+        out.write(asciiLine("--------------------------------------"))
 
         out.write(byteArrayOf(0x1B, 0x45, 0x01))
         out.write(asciiLine("CLIENTE"))
@@ -286,93 +294,48 @@ class ThermalPrinterManager(private val context: Context) {
             out.write(asciiLine("Tel: ${client?.phone.orEmpty()}"))
         }
 
-        out.write(asciiLine("--------------------------------"))
-        wrapAsciiLines("$headerBrandSummary - $modalityLabel").forEach { out.write(asciiLine(it)) }
+        out.write(asciiLine("--------------------------------------"))
+        val productHeader = when {
+            hasEggs && hasSugar -> "$headerBrandSummary - $modalityLabel + Azucar"
+            hasSugar -> "Azucar (Bultos)"
+            else -> "$headerBrandSummary - $modalityLabel"
+        }
+        wrapAsciiLines(productHeader).forEach { out.write(asciiLine(it)) }
 
-        // Tabla de 4 columnas en 32 caracteres: No.(5) + BRUTO(9) + TARA(8) + NETO(10) = 32
-        out.write(byteArrayOf(0x1B, 0x45, 0x01))
-        out.write(
-            tableRow4(
-                if (weighedItems.isNotEmpty()) "No." else "CANT",
-                secondColHeader,
-                "TARA",
-                "NETO kg",
-            ),
-        )
-        out.write(byteArrayOf(0x1B, 0x45, 0x00))
-        if (weighedItems.isNotEmpty()) {
-            var prevGroupKey: Pair<String, BigDecimal>? = null
-            weighedItems.forEachIndexed { idx, item ->
-                if (hasMultiBrandOrPrice) {
-                    val effBrand = item.brand.trim().ifBlank { delivery.brand.ifBlank { "General" } }
-                    val effPrice = (if (item.pricePerKg > BigDecimal.ZERO) item.pricePerKg else BigDecimal.valueOf(delivery.pricePerKg))
-                        .stripTrailingZeros()
-                    val groupKey = effBrand to effPrice
-                    if (groupKey != prevGroupKey) {
-                        prevGroupKey = groupKey
-                        out.write(byteArrayOf(0x1B, 0x45, 0x01))
-                        wrapAsciiLines("$effBrand (${CalculationEngine.formatMoney(effPrice)}/kg)")
-                            .forEach { out.write(asciiLine(it)) }
-                        out.write(byteArrayOf(0x1B, 0x45, 0x00))
-                    }
-                }
-                val numLabel = if (item.modality != DeliveryModality.CAJA_COMPLETA) {
-                    String.format(Locale.US, "%02d*", idx + 1)
-                } else {
-                    String.format(Locale.US, "%02d", idx + 1)
-                }
-                out.write(
-                    tableRow4(
-                        numLabel,
-                        CalculationEngine.formatExactWeight(item.inputWeightKg),
-                        CalculationEngine.formatExactWeight(item.tareDeductionKg),
-                        CalculationEngine.formatExactWeight(item.netWeightKg),
-                    ),
-                )
+        brandBreakdown.forEach { b ->
+            val leftPart = "${b.brand.take(12)} ${CalculationEngine.formatExactWeight(b.netWeightKg)}kg x ${CalculationEngine.formatMoney(b.pricePerKg)}"
+            val rightSub = CalculationEngine.formatMoney(b.subtotalMxn.setScale(2, RoundingMode.HALF_UP))
+            if (normalizeAscii(leftPart).length + 1 + normalizeAscii(rightSub).length <= LINE_WIDTH_CHARS) {
+                out.write(pairLine(leftPart, rightSub))
+            } else {
+                wrapAsciiLines(b.brand).forEach { out.write(asciiLine(it)) }
+                val detailLeft = "${CalculationEngine.formatExactWeight(b.netWeightKg)}kg x ${CalculationEngine.formatMoney(b.pricePerKg)}/kg"
+                out.write(pairLine(detailLeft, rightSub))
             }
-        } else {
-            out.write(
-                tableRow4(
-                    CalculationEngine.formatExactBoxes(delivery.boxes),
-                    CalculationEngine.formatExactWeight(delivery.grossWeightKg),
-                    CalculationEngine.formatExactWeight(delivery.tareDeductionKg),
-                    CalculationEngine.formatExactWeight(delivery.netWeightKg),
-                ),
-            )
+        }
+        if (hasSugar) {
+            val sLeft = "Azucar ${CalculationEngine.formatExactBoxes(delivery.sugarSacks)}bto x ${CalculationEngine.formatExactWeight(delivery.sugarSackWeightKg)}kg"
+            val sRight = CalculationEngine.formatMoney(delivery.sugarSubtotalMxn)
+            if (normalizeAscii(sLeft).length + 1 + normalizeAscii(sRight).length <= LINE_WIDTH_CHARS) {
+                out.write(pairLine(sLeft, sRight))
+            } else {
+                out.write(asciiLine("Azucar (${CalculationEngine.formatExactBoxes(delivery.sugarSacks)} bto)"))
+                out.write(pairLine("${CalculationEngine.formatExactWeight(delivery.sugarSackWeightKg)}kg x ${CalculationEngine.formatMoney(delivery.sugarPricePerSackMxn)}/bto", sRight))
+            }
         }
 
-        out.write(asciiLine("--------------------------------"))
-        out.write(pairLine("Cajas:", CalculationEngine.formatExactBoxes(delivery.boxes)))
-        out.write(pairLine("Tara total:", "${CalculationEngine.formatExactWeight(delivery.tareDeductionKg)} kg"))
-        out.write(
-            pairLine(
-                if (secondColHeader == "ING.kg") "Peso ingresado:" else "Bruto total:",
-                "${CalculationEngine.formatExactWeight(delivery.grossWeightKg)} kg",
-            ),
-        )
-
-        out.write(asciiLine("================================"))
+        out.write(asciiLine("======================================"))
         out.write(byteArrayOf(0x1B, 0x45, 0x01))
-        out.write(pairLine("KILOS NETOS", "${CalculationEngine.formatExactWeight(delivery.netWeightKg)} kg"))
+        out.write(pairLine("KILOS NETOS", "${CalculationEngine.formatExactWeight(totalNetWeightKg)} kg"))
         out.write(byteArrayOf(0x1B, 0x45, 0x00))
-        out.write(asciiLine("================================"))
+        out.write(asciiLine("======================================"))
 
-        if (hasMultiBrandOrPrice) {
-            brandBreakdown.forEach { b ->
-                wrapAsciiLines("${b.brand} ${CalculationEngine.formatExactWeight(b.netWeightKg)}kg x ${CalculationEngine.formatMoney(b.pricePerKg)}/kg")
-                    .forEach { out.write(asciiLine(it)) }
-                val rightSub = CalculationEngine.formatMoney(b.subtotalMxn.setScale(2, RoundingMode.HALF_UP))
-                out.write(pairLine("  Importe ${b.brand.take(10)}:", rightSub))
-            }
-        } else {
-            out.write(pairLine("Precio/kg:", CalculationEngine.formatMoney(delivery.pricePerKg)))
-        }
         out.write(pairLine("Subtotal:", CalculationEngine.formatMoney(rawSubtotal)))
         if (roundingDiff.compareTo(BigDecimal.ZERO) != 0) {
             val sign = if (roundingDiff > BigDecimal.ZERO) "+" else "-"
             out.write(pairLine("Redondeo:", "$sign${CalculationEngine.formatMoney(roundingDiff.abs())}"))
         }
-        out.write(asciiLine("--------------------------------"))
+        out.write(asciiLine("--------------------------------------"))
 
         out.write(byteArrayOf(0x1B, 0x45, 0x01))
         out.write(pairLine("TOTAL", "${CalculationEngine.formatMoney(delivery.finalAmountMxn)} MXN"))
@@ -380,7 +343,7 @@ class ThermalPrinterManager(private val context: Context) {
             out.write(asciiLine(it))
         }
         out.write(byteArrayOf(0x1B, 0x45, 0x00))
-        out.write(asciiLine("--------------------------------"))
+        out.write(asciiLine("--------------------------------------"))
 
         val payLabel = PaymentMethod.fromDb(delivery.paymentMethod).label
         out.write(pairLine("Pagado / Abono:", "${CalculationEngine.formatMoney(effectivePaidMxn)} MXN"))
@@ -398,7 +361,7 @@ class ThermalPrinterManager(private val context: Context) {
         out.write(byteArrayOf(0x1D, 0x42, 0x00))
         out.write(byteArrayOf(0x1B, 0x45, 0x00))
 
-        out.write(asciiLine("--------------------------------"))
+        out.write(asciiLine("--------------------------------------"))
         out.write(byteArrayOf(0x1B, 0x45, 0x01))
         out.write(pairLine("Saldo anterior:", "${CalculationEngine.formatMoney(delivery.previousDebtSnapshotMxn)} MXN"))
         out.write(pairLine("Esta remision:", "+${CalculationEngine.formatMoney(delivery.pendingBalanceMxn)} MXN"))
@@ -407,7 +370,7 @@ class ThermalPrinterManager(private val context: Context) {
         out.write(byteArrayOf(0x1B, 0x45, 0x00))
 
         if (isCredit) {
-            out.write(asciiLine("--------------------------------"))
+            out.write(asciiLine("--------------------------------------"))
             val legend = when {
                 isCancelled -> "Nota cancelada. Las obligaciones de pago y entrega correspondientes fueron revertidas."
                 delivery.pendingBalanceMxn > 0.0 ->
@@ -431,7 +394,7 @@ class ThermalPrinterManager(private val context: Context) {
                 val sigFile = File(path)
                 if (sigFile.exists()) {
                     BitmapFactory.decodeFile(sigFile.absolutePath)?.let { sigBmp ->
-                        out.write(bitmapToEscPosRaster(sigBmp, maxWidthPx = 320))
+                        out.write(bitmapToEscPosRaster(sigBmp, maxWidthPx = 360))
                     }
                 }
             }
@@ -442,7 +405,7 @@ class ThermalPrinterManager(private val context: Context) {
         }
 
         out.write(byteArrayOf(0x1B, 0x61, 0x01)) // Center
-        out.write(asciiLine("--------------------------------"))
+        out.write(asciiLine("--------------------------------------"))
         out.write(byteArrayOf(0x1B, 0x45, 0x01))
         out.write(asciiLine("!Gracias por su preferencia!"))
         out.write(byteArrayOf(0x1B, 0x45, 0x00))
@@ -451,14 +414,6 @@ class ThermalPrinterManager(private val context: Context) {
         out.write(byteArrayOf(0x0A, 0x0A, 0x0A))
         out.write(byteArrayOf(0x1D, 0x56, 0x41, 0x00)) // Cut if supported
         return out.toByteArray()
-    }
-
-    private fun tableRow4(c1: String, c2: String, c3: String, c4: String): ByteArray {
-        val col1 = normalizeAscii(c1).take(5).padEnd(5, ' ')
-        val col2 = normalizeAscii(c2).take(9).padStart(9, ' ')
-        val col3 = normalizeAscii(c3).take(8).padStart(8, ' ')
-        val col4 = normalizeAscii(c4).take(10).padStart(10, ' ')
-        return (col1 + col2 + col3 + col4 + "\n").toByteArray(Charsets.US_ASCII)
     }
 
     private fun wrapAsciiLines(text: String, maxCols: Int = LINE_WIDTH_CHARS): List<String> {

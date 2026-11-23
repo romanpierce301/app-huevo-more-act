@@ -19,6 +19,8 @@ import com.example.data.local.entity.DeliveryEntity
 import com.example.data.local.entity.EggPurchaseEntity
 import com.example.data.local.entity.InventoryBrandEntity
 import com.example.data.local.entity.ReminderEntity
+import com.example.data.local.entity.SugarInventoryEntity
+import com.example.data.local.entity.SugarPurchaseEntity
 import com.example.domain.CalculationEngine
 import com.example.domain.DeliveryModality
 import com.example.domain.PaymentMethod
@@ -65,6 +67,11 @@ class HyhRepository(
     fun observePurchases(): Flow<List<EggPurchaseEntity>> = dao.observePurchases()
 
     fun observeInventoryBrands(): Flow<List<InventoryBrandEntity>> = dao.observeInventoryBrands()
+
+    fun observeSugarPurchases(): Flow<List<SugarPurchaseEntity>> = dao.observeSugarPurchases()
+
+    fun observeSugarInventory(): Flow<SugarInventoryEntity> =
+        dao.observeSugarInventory().map { it ?: SugarInventoryEntity() }
 
     fun observeDeliveries(): Flow<List<DeliveryEntity>> = dao.observeDeliveries()
 
@@ -270,6 +277,51 @@ class HyhRepository(
         }
     }
 
+    suspend fun registerSugarPurchase(
+        purchaseDateMillis: Long,
+        sacks: Double,
+        totalWeightKg: Double,
+    ) {
+        require(sacks.isFinite() && sacks > 0.0) { "La cantidad de bultos de azúcar debe ser mayor a cero" }
+        require(totalWeightKg.isFinite() && totalWeightKg > 0.0) {
+            "El peso de los bultos de azúcar debe ser mayor a cero"
+        }
+        database.withTransaction {
+            dao.insertSugarPurchase(
+                SugarPurchaseEntity(
+                    purchaseDateMillis = purchaseDateMillis,
+                    sacks = sacks,
+                    totalWeightKg = totalWeightKg,
+                ),
+            )
+            val existing = dao.getSugarInventoryOnce()
+            if (existing == null) {
+                dao.upsertSugarInventory(
+                    SugarInventoryEntity(
+                        id = 1,
+                        availableSacks = sacks,
+                        deliveredSacks = 0.0,
+                        availableWeightKg = totalWeightKg,
+                        deliveredWeightKg = 0.0,
+                    ),
+                )
+            } else {
+                val updatedSacks = BigDecimal.valueOf(existing.availableSacks)
+                    .add(BigDecimal.valueOf(sacks))
+                    .toDouble()
+                val updatedWeight = BigDecimal.valueOf(existing.availableWeightKg)
+                    .add(BigDecimal.valueOf(totalWeightKg))
+                    .toDouble()
+                dao.upsertSugarInventory(
+                    existing.copy(
+                        availableSacks = updatedSacks,
+                        availableWeightKg = updatedWeight,
+                    ),
+                )
+            }
+        }
+    }
+
     // --- Entregas y Pagos ---
     suspend fun registerDelivery(
         clientId: Long,
@@ -286,14 +338,33 @@ class HyhRepository(
         initialPaymentMxn: Double,
         signatureBitmap: Bitmap?,
         weighedItems: List<WeighedBoxItem> = emptyList(),
+        sugarSacks: Double = 0.0,
+        sugarSackWeightKg: Double = 0.0,
+        sugarPricePerSackMxn: Double = 0.0,
+        sugarSubtotalMxn: Double = 0.0,
     ): Long = withContext(Dispatchers.IO) {
-        val cleanBrand = CalculationEngine.resolveBrandSummaryLabel(brand, weighedItems)
-        require(boxes.isFinite() && boxes > 0.0) { "Cantidad de cajas inválida" }
-        require(grossWeightKg.isFinite() && grossWeightKg > 0.0) { "Peso inválido" }
-        require(netWeightKg.isFinite() && netWeightKg > 0.0) { "Peso neto inválido" }
-        require(pricePerKg.isFinite() && pricePerKg > 0.0) { "Precio por kilogramo inválido" }
+        val hasEggs = boxes > 0.0 || weighedItems.isNotEmpty()
+        val hasSugar = sugarSacks > 0.0
+        require(hasEggs || hasSugar) { "Agrega al menos una caja de huevo o bultos de azúcar" }
+        if (hasEggs) {
+            require(boxes.isFinite() && boxes > 0.0) { "Cantidad de cajas inválida" }
+            require(grossWeightKg.isFinite() && grossWeightKg > 0.0) { "Peso inválido" }
+            require(netWeightKg.isFinite() && netWeightKg > 0.0) { "Peso neto inválido" }
+            require(pricePerKg.isFinite() && pricePerKg > 0.0) { "Precio por kilogramo inválido" }
+        }
+        if (hasSugar) {
+            require(sugarSacks.isFinite() && sugarSacks > 0.0) { "Cantidad de bultos de azúcar inválida" }
+            require(sugarSackWeightKg.isFinite() && sugarSackWeightKg > 0.0) { "Peso del bulto de azúcar inválido" }
+            require(sugarPricePerSackMxn.isFinite() && sugarPricePerSackMxn > 0.0) { "Precio del bulto de azúcar inválido" }
+            require(sugarSubtotalMxn.isFinite() && sugarSubtotalMxn > 0.0) { "Importe de azúcar inválido" }
+        }
         require(finalAmountMxn.isFinite() && finalAmountMxn > 0.0) { "Importe inválido" }
         require(initialPaymentMxn.isFinite() && initialPaymentMxn >= 0.0) { "Abono inválido" }
+        val cleanBrand = if (hasEggs) {
+            CalculationEngine.resolveBrandSummaryLabel(brand, weighedItems)
+        } else {
+            "Azúcar"
+        }
 
         val finalBd = BigDecimal.valueOf(finalAmountMxn).setScale(2, RoundingMode.HALF_UP)
         val initialBd = if (paymentMethod == PaymentMethod.CONTADO) {
@@ -306,6 +377,7 @@ class HyhRepository(
         val pendingBd = finalBd.subtract(initialBd).setScale(2, RoundingMode.HALF_UP)
         val distinctModalities = weighedItems.map { it.modality }.distinct()
         val resolvedModalityDb = when {
+            !hasEggs && hasSugar -> "AZUCAR"
             distinctModalities.size > 1 -> "MIXTA"
             distinctModalities.size == 1 -> distinctModalities.first().dbValue
             else -> modality.dbValue
@@ -362,59 +434,94 @@ class HyhRepository(
                         signaturePath = signaturePath,
                         status = "ACTIVA",
                         itemsSnapshotJson = itemsJson,
+                        sugarSacks = if (hasSugar) sugarSacks else 0.0,
+                        sugarSackWeightKg = if (hasSugar) sugarSackWeightKg else 0.0,
+                        sugarPricePerSackMxn = if (hasSugar) sugarPricePerSackMxn else 0.0,
+                        sugarSubtotalMxn = if (hasSugar) sugarSubtotalMxn else 0.0,
                     ),
                 )
 
-                // Actualizar inventario fraccionado sin redondear cajas (por marca si hay partidas)
-                val itemBrandBoxes = weighedItems
-                    .map { it.brand.trim().ifBlank { cleanBrand } to it.boxesDecimal }
-                    .groupBy({ it.first }, { it.second })
-                    .mapValues { (_, list) -> list.fold(BigDecimal.ZERO) { acc, b -> acc.add(b) } }
+                // Actualizar inventario fraccionado sin redondear cajas (solo si hay huevo)
+                if (hasEggs) {
+                    val itemBrandBoxes = weighedItems
+                        .map { it.brand.trim().ifBlank { cleanBrand } to it.boxesDecimal }
+                        .groupBy({ it.first }, { it.second })
+                        .mapValues { (_, list) -> list.fold(BigDecimal.ZERO) { acc, b -> acc.add(b) } }
 
-                if (itemBrandBoxes.isEmpty()) {
-                    val brandStock = dao.getInventoryBrand(cleanBrand)
-                    if (brandStock == null) {
-                        dao.upsertInventoryBrand(
-                            InventoryBrandEntity(
-                                brand = cleanBrand,
-                                availableBoxes = 0.0,
-                                deliveredBoxes = boxes,
-                            ),
-                        )
-                    } else {
-                        val newDelivered = BigDecimal.valueOf(brandStock.deliveredBoxes)
-                            .add(BigDecimal.valueOf(boxes))
-                            .toDouble()
-                        dao.upsertInventoryBrand(brandStock.copy(deliveredBoxes = newDelivered))
-                    }
-                } else {
-                    itemBrandBoxes.forEach { (itemBrand, brandBoxes) ->
-                        val brandStock = dao.getInventoryBrand(itemBrand)
+                    if (itemBrandBoxes.isEmpty()) {
+                        val brandStock = dao.getInventoryBrand(cleanBrand)
                         if (brandStock == null) {
                             dao.upsertInventoryBrand(
                                 InventoryBrandEntity(
-                                    brand = itemBrand,
+                                    brand = cleanBrand,
                                     availableBoxes = 0.0,
-                                    deliveredBoxes = brandBoxes.toDouble(),
+                                    deliveredBoxes = boxes,
                                 ),
                             )
                         } else {
                             val newDelivered = BigDecimal.valueOf(brandStock.deliveredBoxes)
-                                .add(brandBoxes)
+                                .add(BigDecimal.valueOf(boxes))
                                 .toDouble()
                             dao.upsertInventoryBrand(brandStock.copy(deliveredBoxes = newDelivered))
+                        }
+                    } else {
+                        itemBrandBoxes.forEach { (itemBrand, brandBoxes) ->
+                            val brandStock = dao.getInventoryBrand(itemBrand)
+                            if (brandStock == null) {
+                                dao.upsertInventoryBrand(
+                                    InventoryBrandEntity(
+                                        brand = itemBrand,
+                                        availableBoxes = 0.0,
+                                        deliveredBoxes = brandBoxes.toDouble(),
+                                    ),
+                                )
+                            } else {
+                                val newDelivered = BigDecimal.valueOf(brandStock.deliveredBoxes)
+                                    .add(brandBoxes)
+                                    .toDouble()
+                                dao.upsertInventoryBrand(brandStock.copy(deliveredBoxes = newDelivered))
+                            }
                         }
                     }
                 }
 
+                // Actualizar inventario de azúcar si la entrega incluyó bultos
+                if (hasSugar) {
+                    val sugarWeight = BigDecimal.valueOf(sugarSacks)
+                        .multiply(BigDecimal.valueOf(sugarSackWeightKg))
+                    val sugarStock = dao.getSugarInventoryOnce()
+                    if (sugarStock == null) {
+                        dao.upsertSugarInventory(
+                            SugarInventoryEntity(
+                                id = 1,
+                                availableSacks = 0.0,
+                                deliveredSacks = sugarSacks,
+                                availableWeightKg = 0.0,
+                                deliveredWeightKg = sugarWeight.toDouble(),
+                            ),
+                        )
+                    } else {
+                        dao.upsertSugarInventory(
+                            sugarStock.copy(
+                                deliveredSacks = BigDecimal.valueOf(sugarStock.deliveredSacks)
+                                    .add(BigDecimal.valueOf(sugarSacks))
+                                    .toDouble(),
+                                deliveredWeightKg = BigDecimal.valueOf(sugarStock.deliveredWeightKg)
+                                    .add(sugarWeight)
+                                    .toDouble(),
+                            ),
+                        )
+                    }
+                }
+
                 // Consumir siguiente folio y mantener registrado el último precio del huevo por kg
-                val shouldUpdateGlobalPrice = client.specialPricePerKg == null || settings.globalPricePerKg <= 0.0
+                val shouldUpdateGlobalPrice = hasEggs && (client.specialPricePerKg == null || settings.globalPricePerKg <= 0.0)
                 val persistedEggPrice = weighedItems.lastOrNull { it.pricePerKg > BigDecimal.ZERO }
                     ?.pricePerKg?.toDouble() ?: pricePerKg
                 dao.upsertSettings(
                     settings.copy(
                         nextFolioSequence = seq + 1,
-                        globalPricePerKg = if (shouldUpdateGlobalPrice) persistedEggPrice else settings.globalPricePerKg,
+                        globalPricePerKg = if (shouldUpdateGlobalPrice && persistedEggPrice > 0.0) persistedEggPrice else settings.globalPricePerKg,
                     ),
                 )
                 deliveryId
@@ -493,13 +600,15 @@ class HyhRepository(
                 .mapValues { (_, list) -> list.fold(BigDecimal.ZERO) { acc, b -> acc.add(b) } }
 
             if (itemBrandBoxes.isEmpty()) {
-                val brandStock = dao.getInventoryBrand(delivery.brand)
-                if (brandStock != null) {
-                    val restored = BigDecimal.valueOf(brandStock.deliveredBoxes)
-                        .subtract(BigDecimal.valueOf(delivery.boxes))
-                        .coerceAtLeast(BigDecimal.ZERO)
-                        .toDouble()
-                    dao.upsertInventoryBrand(brandStock.copy(deliveredBoxes = restored))
+                if (delivery.boxes > 0.0) {
+                    val brandStock = dao.getInventoryBrand(delivery.brand)
+                    if (brandStock != null) {
+                        val restored = BigDecimal.valueOf(brandStock.deliveredBoxes)
+                            .subtract(BigDecimal.valueOf(delivery.boxes))
+                            .coerceAtLeast(BigDecimal.ZERO)
+                            .toDouble()
+                        dao.upsertInventoryBrand(brandStock.copy(deliveredBoxes = restored))
+                    }
                 }
             } else {
                 itemBrandBoxes.forEach { (itemBrand, brandBoxes) ->
@@ -511,6 +620,28 @@ class HyhRepository(
                             .toDouble()
                         dao.upsertInventoryBrand(brandStock.copy(deliveredBoxes = restored))
                     }
+                }
+            }
+
+            if (delivery.sugarSacks > 0.0) {
+                val sugarStock = dao.getSugarInventoryOnce()
+                if (sugarStock != null) {
+                    val sugarWeight = BigDecimal.valueOf(delivery.sugarSacks)
+                        .multiply(BigDecimal.valueOf(delivery.sugarSackWeightKg))
+                    val restoredSacks = BigDecimal.valueOf(sugarStock.deliveredSacks)
+                        .subtract(BigDecimal.valueOf(delivery.sugarSacks))
+                        .coerceAtLeast(BigDecimal.ZERO)
+                        .toDouble()
+                    val restoredWeight = BigDecimal.valueOf(sugarStock.deliveredWeightKg)
+                        .subtract(sugarWeight)
+                        .coerceAtLeast(BigDecimal.ZERO)
+                        .toDouble()
+                    dao.upsertSugarInventory(
+                        sugarStock.copy(
+                            deliveredSacks = restoredSacks,
+                            deliveredWeightKg = restoredWeight,
+                        ),
+                    )
                 }
             }
         }
@@ -584,6 +715,7 @@ class HyhRepository(
             activeDayDeliveries.forEach { d ->
                 totalBoxes = totalBoxes.add(BigDecimal.valueOf(d.boxes))
                 totalKg = totalKg.add(BigDecimal.valueOf(d.netWeightKg))
+                    .add(BigDecimal.valueOf(d.sugarSacks).multiply(BigDecimal.valueOf(d.sugarSackWeightKg)))
                 if (d.paymentMethod == PaymentMethod.CONTADO.dbValue) {
                     cashSales = cashSales.add(BigDecimal.valueOf(d.finalAmountMxn))
                 } else {
@@ -670,6 +802,8 @@ class HyhRepository(
         val abonos = dao.getAllAbonosOnce()
         val reminders = dao.getAllRemindersOnce()
         val closings = dao.getAllDailyClosingsOnce()
+        val sugarPurchases = dao.getAllSugarPurchasesOnce()
+        val sugarInventory = dao.getSugarInventoryOnce()
 
         val zipFile = JsonExporter.createFullBackupZip(
             context = context,
@@ -681,6 +815,8 @@ class HyhRepository(
             abonos = abonos,
             reminders = reminders,
             closings = closings,
+            sugarPurchases = sugarPurchases,
+            sugarInventory = sugarInventory,
         )
         val record = BackupRecordEntity(
             fileName = zipFile.name,
@@ -706,6 +842,8 @@ class HyhRepository(
             abonos = dao.getAllAbonosOnce(),
             reminders = dao.getAllRemindersOnce(),
             closings = dao.getAllDailyClosingsOnce(),
+            sugarPurchases = dao.getAllSugarPurchasesOnce(),
+            sugarInventory = dao.getSugarInventoryOnce(),
         )
         jsonFile.writeText(jsonObj.toString(2), Charsets.UTF_8)
         val record = BackupRecordEntity(
@@ -835,13 +973,15 @@ class HyhRepository(
                 ?.ifBlank { "Válido con firma digital." } ?: "Válido con firma digital.",
         )
 
+        fun Double.nonNegOrZero(): Double = if (isFinite() && this >= 0.0) this else 0.0
+
         val clients = parseJsonArray(root.optJSONArray("clients")) { o ->
             ClientEntity(
                 id = o.getLong("id"),
                 name = o.getString("name"),
                 phone = o.optString("phone", ""),
                 address = o.optString("address", ""),
-                specialPricePerKg = if (o.isNull("specialPricePerKg")) null else o.optDouble("specialPricePerKg"),
+                specialPricePerKg = if (o.isNull("specialPricePerKg")) null else o.optDouble("specialPricePerKg").takeIf { it.isFinite() && it >= 0.0 },
                 creditTermDays = if (o.isNull("creditTermDays")) null else o.optInt("creditTermDays").coerceIn(0, 3650),
                 createdAtMillis = o.optLong("createdAtMillis", System.currentTimeMillis()),
             )
@@ -850,17 +990,17 @@ class HyhRepository(
             EggPurchaseEntity(
                 id = o.getLong("id"),
                 purchaseDateMillis = o.getLong("purchaseDateMillis"),
-                boxes = o.getDouble("boxes"),
+                boxes = o.getDouble("boxes").nonNegOrZero(),
                 brand = o.getString("brand"),
-                grossWeightKg = o.getDouble("grossWeightKg"),
+                grossWeightKg = o.getDouble("grossWeightKg").nonNegOrZero(),
                 createdAtMillis = o.optLong("createdAtMillis", System.currentTimeMillis()),
             )
         }
         val inventory = parseJsonArray(root.optJSONArray("inventory")) { o ->
             InventoryBrandEntity(
                 brand = o.getString("brand"),
-                availableBoxes = o.getDouble("availableBoxes"),
-                deliveredBoxes = o.getDouble("deliveredBoxes"),
+                availableBoxes = o.getDouble("availableBoxes").nonNegOrZero(),
+                deliveredBoxes = o.getDouble("deliveredBoxes").nonNegOrZero(),
             )
         }
         val deliveries = parseJsonArray(root.optJSONArray("deliveries")) { o ->
@@ -894,6 +1034,10 @@ class HyhRepository(
                 cancelledAtMillis = if (o.isNull("cancelledAtMillis")) null else o.optLong("cancelledAtMillis"),
                 cancellationReason = if (o.isNull("cancellationReason")) null else o.optString("cancellationReason", null),
                 itemsSnapshotJson = o.optString("itemsSnapshotJson", "[]"),
+                sugarSacks = o.optDouble("sugarSacks", 0.0).takeIf { it.isFinite() && it >= 0.0 } ?: 0.0,
+                sugarSackWeightKg = o.optDouble("sugarSackWeightKg", 0.0).takeIf { it.isFinite() && it >= 0.0 } ?: 0.0,
+                sugarPricePerSackMxn = o.optDouble("sugarPricePerSackMxn", 0.0).takeIf { it.isFinite() && it >= 0.0 } ?: 0.0,
+                sugarSubtotalMxn = o.optDouble("sugarSubtotalMxn", 0.0).takeIf { it.isFinite() && it >= 0.0 } ?: 0.0,
             )
         }
         val abonos = parseJsonArray(root.optJSONArray("abonos")) { o ->
@@ -902,7 +1046,7 @@ class HyhRepository(
                 clientId = o.getLong("clientId"),
                 deliveryId = o.getLong("deliveryId"),
                 deliveryFolio = o.getString("deliveryFolio"),
-                amountMxn = o.getDouble("amountMxn"),
+                amountMxn = o.getDouble("amountMxn").nonNegOrZero(),
                 dateMillis = o.getLong("dateMillis"),
                 note = o.optString("note", ""),
                 isCancelled = o.optBoolean("isCancelled", false),
@@ -947,6 +1091,24 @@ class HyhRepository(
                 hashSignature = o.optString("hashSignature", ""),
             )
         }
+        val sugarPurchases = parseJsonArray(root.optJSONArray("sugarPurchases")) { o ->
+            SugarPurchaseEntity(
+                id = o.getLong("id"),
+                purchaseDateMillis = o.getLong("purchaseDateMillis"),
+                sacks = o.getDouble("sacks").nonNegOrZero(),
+                totalWeightKg = o.getDouble("totalWeightKg").nonNegOrZero(),
+                createdAtMillis = o.optLong("createdAtMillis", System.currentTimeMillis()),
+            )
+        }
+        val sugarInventory = root.optJSONObject("sugarInventory")?.let { o ->
+            SugarInventoryEntity(
+                id = 1,
+                availableSacks = o.optDouble("availableSacks", 0.0).nonNegOrZero(),
+                deliveredSacks = o.optDouble("deliveredSacks", 0.0).nonNegOrZero(),
+                availableWeightKg = o.optDouble("availableWeightKg", 0.0).nonNegOrZero(),
+                deliveredWeightKg = o.optDouble("deliveredWeightKg", 0.0).nonNegOrZero(),
+            )
+        }
 
         database.withTransaction {
             dao.clearAbonos()
@@ -956,6 +1118,8 @@ class HyhRepository(
             dao.clearReminders()
             dao.clearClosings()
             dao.clearClients()
+            dao.clearSugarPurchases()
+            dao.clearSugarInventory()
 
             dao.upsertSettings(settings)
             clients.forEach { dao.insertClient(it) }
@@ -965,6 +1129,8 @@ class HyhRepository(
             abonos.forEach { dao.insertAbono(it) }
             reminders.forEach { dao.insertReminder(it) }
             closings.forEach { dao.insertDailyClosing(it) }
+            sugarPurchases.forEach { dao.insertSugarPurchase(it) }
+            if (sugarInventory != null) dao.upsertSugarInventory(sugarInventory)
         }
 
         reminders.filter { !it.isCompleted }.forEach {

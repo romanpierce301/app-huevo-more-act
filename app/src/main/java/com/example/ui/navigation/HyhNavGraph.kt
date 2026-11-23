@@ -167,7 +167,9 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val clients by viewModel.clientsWithDebt.collectAsStateWithLifecycle()
     val purchases by viewModel.purchases.collectAsStateWithLifecycle()
+    val sugarPurchases by viewModel.sugarPurchases.collectAsStateWithLifecycle()
     val inventoryBrands by viewModel.inventoryBrands.collectAsStateWithLifecycle()
+    val sugarInventory by viewModel.sugarInventory.collectAsStateWithLifecycle()
     val deliveries by viewModel.deliveries.collectAsStateWithLifecycle()
     val activeAbonos by viewModel.activeAbonos.collectAsStateWithLifecycle()
     val reminders by viewModel.reminders.collectAsStateWithLifecycle()
@@ -421,6 +423,9 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                                 onUpdateModality = viewModel::updateDraftModality,
                                 onUpdateWeight = viewModel::updateDraftWeight,
                                 onUpdatePricePerKg = viewModel::updateDraftPricePerKg,
+                                onUpdateSugarSacks = viewModel::updateDraftSugarSacks,
+                                onUpdateSugarWeightPerSack = viewModel::updateDraftSugarWeightPerSack,
+                                onUpdateSugarPricePerSack = viewModel::updateDraftSugarPricePerSack,
                                 onAddBoxItem = viewModel::addWeighedBoxItem,
                                 onRemoveBoxItem = viewModel::removeWeighedBoxItem,
                                 onContinueToPayment = {
@@ -520,9 +525,11 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                             BackHandler { navigateToTopModule(HyhRoutes.PANEL_PRINCIPAL) }
                             ComprasHuevoScreen(
                                 purchases = purchases,
+                                sugarPurchases = sugarPurchases,
                                 inventoryBrands = inventoryBrands,
                                 onOpenDrawer = { scope.launch { drawerState.open() } },
                                 onRegisterPurchase = viewModel::registerPurchase,
+                                onRegisterSugarPurchase = viewModel::registerSugarPurchase,
                             )
                         }
 
@@ -531,6 +538,8 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                             InventarioScreen(
                                 inventoryBrands = inventoryBrands,
                                 purchases = purchases,
+                                sugarInventory = sugarInventory,
+                                sugarPurchases = sugarPurchases,
                                 onOpenDrawer = { scope.launch { drawerState.open() } },
                             )
                         }

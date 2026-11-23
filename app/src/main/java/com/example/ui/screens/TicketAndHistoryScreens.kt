@@ -66,7 +66,7 @@ import com.example.ui.components.AuroraPrimaryButton
 import com.example.ui.components.AuroraStatusBadge
 import com.example.ui.components.AuroraTextField
 import com.example.ui.components.AuroraTopBar
-import com.example.ui.components.ThermalTicket48mmView
+import com.example.ui.components.ThermalTicket60mmView
 import com.example.ui.theme.Error
 import com.example.ui.theme.ErrorContainer
 import com.example.ui.theme.OnErrorContainer
@@ -128,7 +128,7 @@ fun TicketScreen(
 
     Column(modifier = Modifier.fillMaxSize()) {
         AuroraTopBar(
-            title = "Ticket 48 mm",
+            title = "Ticket 60 mm",
             subtitle = "${delivery.folio} • ${PaymentMethod.fromDb(delivery.paymentMethod).label}",
             showDrawerMenu = false,
             onMenuOrBackClick = onBack,
@@ -148,7 +148,7 @@ fun TicketScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            ThermalTicket48mmView(
+            ThermalTicket60mmView(
                 delivery = delivery,
                 client = client,
                 settings = settings,
@@ -164,7 +164,7 @@ fun TicketScreen(
                 Spacer(Modifier.height(12.dp))
 
                 AuroraPrimaryButton(
-                    text = "Imprimir (48 mm)",
+                    text = "Imprimir (60 mm)",
                     icon = Icons.Default.Print,
                     onClick = { onPrint(delivery) },
                     testTag = "ticket_print_button",
@@ -394,8 +394,18 @@ fun EntregasRealizadasScreen(
                                 modifier = Modifier.padding(10.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                             ) {
+                                val totalNetKg = delivery.netWeightKg + (delivery.sugarSacks * delivery.sugarSackWeightKg)
+                                val qtySummary = buildList {
+                                    if (delivery.boxes > 0.0) {
+                                        add("${CalculationEngine.formatExactBoxes(delivery.boxes)} cjs")
+                                    }
+                                    if (delivery.sugarSacks > 0.0) {
+                                        add("${CalculationEngine.formatExactBoxes(delivery.sugarSacks)} bto azúcar")
+                                    }
+                                    add("${CalculationEngine.formatExactWeight(totalNetKg)} kg")
+                                }.joinToString(" • ")
                                 Text(
-                                    text = "${CalculationEngine.formatExactBoxes(delivery.boxes)} cjs • ${CalculationEngine.formatExactWeight(delivery.netWeightKg)} kg",
+                                    text = qtySummary,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = OnSurface,
                                 )
@@ -477,8 +487,16 @@ private fun CancelDeliveryDialog(
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                val revertDesc = buildList {
+                    if (delivery.boxes > 0.0) {
+                        add("${CalculationEngine.formatExactBoxes(delivery.boxes)} cajas")
+                    }
+                    if (delivery.sugarSacks > 0.0) {
+                        add("${CalculationEngine.formatExactBoxes(delivery.sugarSacks)} bultos de azúcar")
+                    }
+                }.joinToString(" y ").ifEmpty { "las unidades" }
                 Text(
-                    text = "El folio se conservará marcado como CANCELADO, se revertirán las ${CalculationEngine.formatExactBoxes(delivery.boxes)} cajas al inventario y se ajustará la deuda del cliente.",
+                    text = "El folio se conservará marcado como CANCELADO, se revertirán $revertDesc al inventario y se ajustará la deuda del cliente.",
                     style = MaterialTheme.typography.bodySmall,
                     color = OnSurfaceVariant,
                 )

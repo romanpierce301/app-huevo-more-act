@@ -449,7 +449,10 @@ fun CierresDiariosScreen(
     val abonosSum = todayAbonos.fold(BigDecimal.ZERO) { acc, a -> acc.add(BigDecimal.valueOf(a.amountMxn)) }
     val moneyCollected = cashSales.add(initialCreditPaid).add(abonosSum)
     val boxesToday = activeToday.fold(BigDecimal.ZERO) { acc, d -> acc.add(BigDecimal.valueOf(d.boxes)) }
-    val kgToday = activeToday.fold(BigDecimal.ZERO) { acc, d -> acc.add(BigDecimal.valueOf(d.netWeightKg)) }
+    val kgToday = activeToday.fold(BigDecimal.ZERO) { acc, d ->
+        acc.add(BigDecimal.valueOf(d.netWeightKg + (d.sugarSacks * d.sugarSackWeightKg)))
+    }
+    val sugarSacksToday = activeToday.fold(BigDecimal.ZERO) { acc, d -> acc.add(BigDecimal.valueOf(d.sugarSacks)) }
     val pendingAll = deliveries.filter { it.status == "ACTIVA" }
         .fold(BigDecimal.ZERO) { acc, d -> acc.add(BigDecimal.valueOf(d.pendingBalanceMxn)) }
 
@@ -493,6 +496,9 @@ fun CierresDiariosScreen(
                     ClosingStatPair("Ventas a crédito:", "${CalculationEngine.formatMoney(creditSales)} MXN")
                     ClosingStatPair("Abonos recibidos:", "${CalculationEngine.formatMoney(abonosSum)} MXN")
                     ClosingStatPair("Cajas entregadas:", "${CalculationEngine.formatExactBoxes(boxesToday)} cajas")
+                    if (sugarSacksToday > BigDecimal.ZERO) {
+                        ClosingStatPair("Bultos de azúcar:", "${CalculationEngine.formatExactBoxes(sugarSacksToday)} bultos")
+                    }
                     ClosingStatPair("Kilogramos entregados:", "${CalculationEngine.formatExactWeight(kgToday)} kg")
                     ClosingStatPair("Clientes atendidos:", "${activeToday.map { it.clientId }.distinct().size}")
                     ClosingStatPair("Deudas pendientes totales:", "${CalculationEngine.formatMoney(pendingAll)} MXN")
@@ -707,6 +713,7 @@ fun DetalleCierreScreen(
                     val clientName = m.optString("cliente_nombre")
                     val status = m.optString("estado", "ACTIVA")
                     val cajas = m.optDouble("cajas", 0.0)
+                    val bultosAzucar = m.optDouble("bultos_azucar", 0.0)
                     val pesoNeto = m.optDouble("peso_neto_kg", 0.0)
                     val importe = m.optDouble("importe_final_mxn", 0.0)
                     val forma = m.optString("forma_pago")
@@ -729,8 +736,13 @@ fun DetalleCierreScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                         ) {
+                            val qtyLabel = buildList {
+                                if (cajas > 0.0) add("${CalculationEngine.formatExactBoxes(cajas)} cjs")
+                                if (bultosAzucar > 0.0) add("${CalculationEngine.formatExactBoxes(bultosAzucar)} bto azúcar")
+                                add("${CalculationEngine.formatExactWeight(pesoNeto)} kg")
+                            }.joinToString(" • ")
                             Text(
-                                text = "${CalculationEngine.formatExactBoxes(cajas)} cjs • ${CalculationEngine.formatExactWeight(pesoNeto)} kg",
+                                text = qtyLabel,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = OnSurfaceVariant,
                             )

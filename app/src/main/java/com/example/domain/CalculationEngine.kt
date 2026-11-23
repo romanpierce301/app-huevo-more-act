@@ -49,6 +49,16 @@ data class BrandBreakdownItem(
     val subtotalMxn: BigDecimal,
 )
 
+data class SugarDeliverySummary(
+    val sacks: BigDecimal = BigDecimal.ZERO,
+    val weightPerSackKg: BigDecimal = BigDecimal.ZERO,
+    val totalWeightKg: BigDecimal = BigDecimal.ZERO,
+    val pricePerSackMxn: BigDecimal = BigDecimal.ZERO,
+    val subtotalMxn: BigDecimal = BigDecimal.ZERO,
+    val isPresent: Boolean = false,
+    val isPartialError: Boolean = false,
+)
+
 data class DeliveryCalculationResult(
     val boxesDecimal: BigDecimal,
     val inputWeightKg: BigDecimal,
@@ -59,6 +69,8 @@ data class DeliveryCalculationResult(
     val finalAmountMxn: BigDecimal,
     val roundingDiffMxn: BigDecimal,
     val isValid: Boolean,
+    val sugarSummary: SugarDeliverySummary = SugarDeliverySummary(),
+    val combinedNetWeightKg: BigDecimal = netWeightKg,
 )
 
 data class CreditLegendSegment(
@@ -205,6 +217,66 @@ object CalculationEngine {
             finalAmountMxn = finalAmount,
             roundingDiffMxn = diff,
             isValid = valid,
+        )
+    }
+
+    fun calculateSugarSummary(
+        sacksInput: String,
+        weightPerSackInput: String,
+        pricePerSackInput: String,
+    ): SugarDeliverySummary {
+        val anyTyped = sacksInput.isNotBlank() || weightPerSackInput.isNotBlank() || pricePerSackInput.isNotBlank()
+        if (!anyTyped) return SugarDeliverySummary()
+        val sacks = parsePositiveDecimal(sacksInput).stripTrailingZeros()
+        val weightPerSack = parsePositiveDecimal(weightPerSackInput).stripTrailingZeros()
+        val pricePerSack = parsePositiveDecimal(pricePerSackInput).stripTrailingZeros()
+        val totalWeight = sacks.multiply(weightPerSack).stripTrailingZeros()
+        val subtotal = sacks.multiply(pricePerSack)
+        val valid = sacks > BigDecimal.ZERO && weightPerSack > BigDecimal.ZERO && pricePerSack > BigDecimal.ZERO
+        return SugarDeliverySummary(
+            sacks = sacks,
+            weightPerSackKg = weightPerSack,
+            totalWeightKg = totalWeight,
+            pricePerSackMxn = pricePerSack,
+            subtotalMxn = subtotal,
+            isPresent = valid,
+            isPartialError = !valid,
+        )
+    }
+
+    fun calculateDeliveryWithSugar(
+        items: List<WeighedBoxItem>,
+        pricePerKg: BigDecimal,
+        sugarSummary: SugarDeliverySummary,
+    ): DeliveryCalculationResult {
+        val eggResult = calculateDeliveryFromItems(items = items, pricePerKg = pricePerKg)
+        if (sugarSummary.isPartialError) {
+            return eggResult.copy(
+                isValid = false,
+                sugarSummary = sugarSummary,
+                combinedNetWeightKg = eggResult.netWeightKg.add(sugarSummary.totalWeightKg),
+            )
+        }
+        if (!sugarSummary.isPresent) {
+            return eggResult
+        }
+        val eggsValidIfPresent = items.isEmpty() || eggResult.isValid
+        val combinedRaw = eggResult.rawAmountMxn.add(sugarSummary.subtotalMxn)
+        val combinedFinal = roundMxnAmount(combinedRaw)
+        val combinedDiff = combinedFinal.subtract(combinedRaw.setScale(2, RoundingMode.HALF_UP))
+        val combinedNet = eggResult.netWeightKg.add(sugarSummary.totalWeightKg)
+        return DeliveryCalculationResult(
+            boxesDecimal = eggResult.boxesDecimal,
+            inputWeightKg = eggResult.inputWeightKg,
+            tareDeductionKg = eggResult.tareDeductionKg,
+            netWeightKg = eggResult.netWeightKg,
+            pricePerKg = eggResult.pricePerKg,
+            rawAmountMxn = combinedRaw,
+            finalAmountMxn = combinedFinal,
+            roundingDiffMxn = combinedDiff,
+            isValid = eggsValidIfPresent && sugarSummary.subtotalMxn > BigDecimal.ZERO,
+            sugarSummary = sugarSummary,
+            combinedNetWeightKg = combinedNet,
         )
     }
 
@@ -503,6 +575,8 @@ object CalculationEngine {
         items: List<WeighedBoxItem>,
         fallbackBrand: String = "General",
         fallbackPricePerKg: BigDecimal = BigDecimal.ZERO,
+        fallbackBoxes: BigDecimal = BigDecimal.ZERO,
+        fallbackNetWeightKg: BigDecimal = BigDecimal.ZERO,
     ): List<BrandBreakdownItem> {
         val cleanFallbackBrand = fallbackBrand.trim().ifBlank { "General" }
         val safeFallbackPrice = if (fallbackPricePerKg > BigDecimal.ZERO) {
@@ -510,7 +584,21 @@ object CalculationEngine {
         } else {
             BigDecimal.ZERO
         }
-        if (items.isEmpty()) return emptyList()
+        if (items.isEmpty()) {
+            return if (fallbackNetWeightKg > BigDecimal.ZERO) {
+                listOf(
+                    BrandBreakdownItem(
+                        brand = cleanFallbackBrand,
+                        boxesDecimal = fallbackBoxes,
+                        netWeightKg = fallbackNetWeightKg,
+                        pricePerKg = safeFallbackPrice,
+                        subtotalMxn = fallbackNetWeightKg.multiply(safeFallbackPrice),
+                    ),
+                )
+            } else {
+                emptyList()
+            }
+        }
 
         val grouped = LinkedHashMap<Pair<String, BigDecimal>, MutableList<WeighedBoxItem>>()
         for (item in items) {

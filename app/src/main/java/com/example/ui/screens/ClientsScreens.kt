@@ -722,8 +722,15 @@ fun PerfilClienteScreen(
                             )
                         }
                         Spacer(Modifier.height(4.dp))
+                        val totalKg = d.netWeightKg + (d.sugarSacks * d.sugarSackWeightKg)
+                        val detailParts = buildList {
+                            if (d.boxes > 0.0) add("${CalculationEngine.formatExactBoxes(d.boxes)} cajas")
+                            if (d.sugarSacks > 0.0) add("${CalculationEngine.formatExactBoxes(d.sugarSacks)} bto azúcar")
+                            add("${CalculationEngine.formatExactWeight(totalKg)} kg netos")
+                            add(d.brand)
+                        }
                         Text(
-                            text = "${CalculationEngine.formatExactBoxes(d.boxes)} cajas • ${CalculationEngine.formatExactWeight(d.netWeightKg)} kg netos • ${d.brand}",
+                            text = detailParts.joinToString(" • "),
                             style = MaterialTheme.typography.bodySmall,
                             color = OnSurfaceVariant,
                         )

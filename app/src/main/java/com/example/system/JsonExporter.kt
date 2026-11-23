@@ -9,6 +9,8 @@ import com.example.data.local.entity.DeliveryEntity
 import com.example.data.local.entity.EggPurchaseEntity
 import com.example.data.local.entity.InventoryBrandEntity
 import com.example.data.local.entity.ReminderEntity
+import com.example.data.local.entity.SugarInventoryEntity
+import com.example.data.local.entity.SugarPurchaseEntity
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -53,6 +55,10 @@ object JsonExporter {
             put("firma_archivo", delivery.signaturePath ?: JSONObject.NULL)
             put("cancelado_fecha_millis", delivery.cancelledAtMillis ?: JSONObject.NULL)
             put("cancelado_motivo", delivery.cancellationReason ?: JSONObject.NULL)
+            put("bultos_azucar", delivery.sugarSacks)
+            put("peso_bulto_azucar_kg", delivery.sugarSackWeightKg)
+            put("precio_bulto_azucar_mxn", delivery.sugarPricePerSackMxn)
+            put("subtotal_azucar_mxn", delivery.sugarSubtotalMxn)
             put(
                 "cajas_detalle",
                 runCatching { JSONArray(delivery.itemsSnapshotJson.ifBlank { "[]" }) }
@@ -102,6 +108,8 @@ object JsonExporter {
         abonos: List<AbonoEntity>,
         reminders: List<ReminderEntity>,
         closings: List<DailyClosingEntity>,
+        sugarPurchases: List<SugarPurchaseEntity> = emptyList(),
+        sugarInventory: SugarInventoryEntity? = null,
     ): JSONObject {
         val clientsArr = JSONArray().apply {
             clients.forEach { c ->
@@ -171,6 +179,10 @@ object JsonExporter {
                         put("cancelledAtMillis", d.cancelledAtMillis ?: JSONObject.NULL)
                         put("cancellationReason", d.cancellationReason ?: JSONObject.NULL)
                         put("itemsSnapshotJson", d.itemsSnapshotJson)
+                        put("sugarSacks", d.sugarSacks)
+                        put("sugarSackWeightKg", d.sugarSackWeightKg)
+                        put("sugarPricePerSackMxn", d.sugarPricePerSackMxn)
+                        put("sugarSubtotalMxn", d.sugarSubtotalMxn)
                     },
                 )
             }
@@ -252,8 +264,31 @@ object JsonExporter {
             put("creditLegendClosing", settings.creditLegendClosing)
         }
 
+        val sugarPurchasesArr = JSONArray().apply {
+            sugarPurchases.forEach { sp ->
+                put(
+                    JSONObject().apply {
+                        put("id", sp.id)
+                        put("purchaseDateMillis", sp.purchaseDateMillis)
+                        put("sacks", sp.sacks)
+                        put("totalWeightKg", sp.totalWeightKg)
+                        put("createdAtMillis", sp.createdAtMillis)
+                    },
+                )
+            }
+        }
+        val sugarInvObj = sugarInventory?.let { si ->
+            JSONObject().apply {
+                put("id", si.id)
+                put("availableSacks", si.availableSacks)
+                put("deliveredSacks", si.deliveredSacks)
+                put("availableWeightKg", si.availableWeightKg)
+                put("deliveredWeightKg", si.deliveredWeightKg)
+            }
+        }
+
         return JSONObject().apply {
-            put("schemaVersion", 1)
+            put("schemaVersion", 2)
             put("exportedAt", isoFormat.format(Date()))
             put("settings", settingsObj)
             put("clients", clientsArr)
@@ -263,6 +298,8 @@ object JsonExporter {
             put("abonos", abonosArr)
             put("reminders", remindersArr)
             put("closings", closingsArr)
+            put("sugarPurchases", sugarPurchasesArr)
+            if (sugarInvObj != null) put("sugarInventory", sugarInvObj)
         }
     }
 
@@ -276,6 +313,8 @@ object JsonExporter {
         abonos: List<AbonoEntity>,
         reminders: List<ReminderEntity>,
         closings: List<DailyClosingEntity>,
+        sugarPurchases: List<SugarPurchaseEntity> = emptyList(),
+        sugarInventory: SugarInventoryEntity? = null,
     ): File {
         val dir = File(context.filesDir, "backups").apply { mkdirs() }
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
@@ -290,6 +329,8 @@ object JsonExporter {
             abonos = abonos,
             reminders = reminders,
             closings = closings,
+            sugarPurchases = sugarPurchases,
+            sugarInventory = sugarInventory,
         )
 
         val metadataJson = JSONObject().apply {

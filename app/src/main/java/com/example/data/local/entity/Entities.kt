@@ -35,6 +35,32 @@ data class InventoryBrandEntity(
             .subtract(java.math.BigDecimal.valueOf(deliveredBoxes))).toDouble()
 }
 
+@Entity(tableName = "sugar_purchases")
+data class SugarPurchaseEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val purchaseDateMillis: Long,
+    val sacks: Double,
+    val totalWeightKg: Double,
+    val createdAtMillis: Long = System.currentTimeMillis(),
+)
+
+@Entity(tableName = "sugar_inventory")
+data class SugarInventoryEntity(
+    @PrimaryKey val id: Int = 1,
+    val availableSacks: Double = 0.0,
+    val deliveredSacks: Double = 0.0,
+    val availableWeightKg: Double = 0.0,
+    val deliveredWeightKg: Double = 0.0,
+) {
+    val remainingSacks: Double
+        get() = (java.math.BigDecimal.valueOf(availableSacks)
+            .subtract(java.math.BigDecimal.valueOf(deliveredSacks))).toDouble()
+
+    val remainingWeightKg: Double
+        get() = (java.math.BigDecimal.valueOf(availableWeightKg)
+            .subtract(java.math.BigDecimal.valueOf(deliveredWeightKg))).toDouble()
+}
+
 @Entity(tableName = "deliveries")
 data class DeliveryEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -61,6 +87,10 @@ data class DeliveryEntity(
     val cancelledAtMillis: Long? = null,
     val cancellationReason: String? = null,
     val itemsSnapshotJson: String = "[]",
+    val sugarSacks: Double = 0.0,
+    val sugarSackWeightKg: Double = 0.0,
+    val sugarPricePerSackMxn: Double = 0.0,
+    val sugarSubtotalMxn: Double = 0.0,
 )
 
 @Entity(tableName = "abonos")
