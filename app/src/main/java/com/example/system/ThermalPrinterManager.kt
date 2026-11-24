@@ -4,10 +4,22 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothClass
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.bluetooth.le.BluetoothLeScanner
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
+import android.companion.AssociationInfo
+import android.companion.AssociationRequest
+import android.companion.BluetoothDeviceFilter
+import android.companion.CompanionDeviceManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -15,8 +27,13 @@ import android.graphics.Color
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.location.LocationManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
+import androidx.core.location.LocationManagerCompat
 import com.example.R
 import com.example.data.local.entity.BusinessSettingsEntity
 import com.example.data.local.entity.ClientEntity
@@ -25,6 +42,11 @@ import com.example.domain.CalculationEngine
 import com.example.domain.DeliveryModality
 import com.example.domain.PaymentMethod
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -35,11 +57,24 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 data class PairedPrinterDevice(
     val name: String,
     val address: String,
     val type: String, // "BLUETOOTH" or "USB"
+    val isPaired: Boolean = true,
+    val isPrinterLikely: Boolean = false,
+)
+
+data class BluetoothDiscoveryState(
+    val isBluetoothSupported: Boolean = true,
+    val isBluetoothEnabled: Boolean = true,
+    val isScanning: Boolean = false,
+    val pairingAddress: String? = null,
+    val statusMessage: String? = null,
+    val errorMessage: String? = null,
+    val needsLocationToggleHint: Boolean = false,
 )
 
 class ThermalPrinterManager(private val context: Context) {
@@ -48,6 +83,244 @@ class ThermalPrinterManager(private val context: Context) {
         private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
         private const val USB_PERMISSION_ACTION = "com.aistudio.hyhhuevos.qmzpkt.USB_PERMISSION"
         private const val LINE_WIDTH_CHARS = 38
+        private val PRINTER_KEYWORDS = listOf(
+            "print", "impres", "pos", "mtp", "rpp", "pt-", "zj-", "btp",
+            "xprinter", "gprinter", "epson", "star", "bixolon", "hoin",
+            "sunmi", "thermal", "termica", "58", "60", "80", "mpt", "rp-",
+        )
+    }
+
+    private val discoveredBluetoothMap = ConcurrentHashMap<String, PairedPrinterDevice>()
+    private val receiverLock = Any()
+
+    @Volatile
+    private var isReceiverRegistered = false
+
+    @Volatile
+    private var pendingPairAddress: String? = null
+
+    @Volatile
+    private var pendingPairSuccess: ((PairedPrinterDevice) -> Unit)? = null
+
+    @Volatile
+    private var pendingPairFailure: ((String) -> Unit)? = null
+
+    @Volatile
+    private var activeLeScanner: BluetoothLeScanner? = null
+
+    @Volatile
+    private var activeLeCallback: ScanCallback? = null
+
+    private val _discoveryState = MutableStateFlow(
+        BluetoothDiscoveryState(
+            isBluetoothSupported = bluetoothAdapter() != null,
+            isBluetoothEnabled = bluetoothAdapter()?.isEnabled == true,
+        ),
+    )
+    val discoveryState: StateFlow<BluetoothDiscoveryState> = _discoveryState.asStateFlow()
+
+    private val _availablePrinters = MutableStateFlow<List<PairedPrinterDevice>>(emptyList())
+    val availablePrinters: StateFlow<List<PairedPrinterDevice>> = _availablePrinters.asStateFlow()
+
+    private val discoveryReceiver = object : BroadcastReceiver() {
+        @SuppressLint("MissingPermission")
+        override fun onReceive(ctx: Context?, intent: Intent?) {
+            val action = intent?.action ?: return
+            when (action) {
+                BluetoothAdapter.ACTION_STATE_CHANGED -> {
+                    val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+                    val enabled = state == BluetoothAdapter.STATE_ON
+                    _discoveryState.update {
+                        it.copy(
+                            isBluetoothEnabled = enabled,
+                            isScanning = if (!enabled) false else it.isScanning,
+                            pairingAddress = if (!enabled) null else it.pairingAddress,
+                            statusMessage = if (!enabled) null else it.statusMessage,
+                        )
+                    }
+                    if (enabled) {
+                        refreshKnownPrinters()
+                    }
+                }
+
+                BluetoothAdapter.ACTION_DISCOVERY_STARTED -> {
+                    _discoveryState.update {
+                        it.copy(
+                            isScanning = true,
+                            errorMessage = null,
+                            needsLocationToggleHint = false,
+                            statusMessage = "Buscando impresoras Bluetooth cercanas...",
+                        )
+                    }
+                }
+
+                BluetoothDevice.ACTION_FOUND -> {
+                    val device = IntentCompat.getParcelableExtra(
+                        intent,
+                        BluetoothDevice.EXTRA_DEVICE,
+                        BluetoothDevice::class.java,
+                    ) ?: return
+                    val address = device.address?.takeIf { it.isNotBlank() } ?: return
+                    val rawName = try {
+                        if (hasBluetoothPermission()) device.name?.trim().orEmpty() else ""
+                    } catch (_: SecurityException) {
+                        ""
+                    }
+                    val bonded = try {
+                        if (hasBluetoothPermission()) device.bondState == BluetoothDevice.BOND_BONDED else false
+                    } catch (_: SecurityException) {
+                        false
+                    }
+                    val majorClass = try {
+                        if (hasBluetoothPermission()) device.bluetoothClass?.majorDeviceClass else null
+                    } catch (_: SecurityException) {
+                        null
+                    }
+                    val existing = discoveredBluetoothMap[address]
+                    val resolvedName = when {
+                        rawName.isNotBlank() -> rawName
+                        existing != null && !existing.name.startsWith("Dispositivo Bluetooth") -> existing.name
+                        else -> "Dispositivo Bluetooth (${address.takeLast(5)})"
+                    }
+                    val likely = isLikelyThermalPrinter(resolvedName, majorClass) || (existing?.isPrinterLikely == true)
+                    discoveredBluetoothMap[address] = PairedPrinterDevice(
+                        name = resolvedName,
+                        address = address,
+                        type = "BLUETOOTH",
+                        isPaired = bonded,
+                        isPrinterLikely = likely,
+                    )
+                    rebuildAvailablePrinters()
+                }
+
+                BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
+                    val foundNewCount = discoveredBluetoothMap.values.count { !it.isPaired }
+                    val needsLocHint = Build.VERSION.SDK_INT < Build.VERSION_CODES.S &&
+                        foundNewCount == 0 &&
+                        !isLocationEnabledForLegacyScan()
+                    _discoveryState.update { current ->
+                        if (current.pairingAddress != null) {
+                            current.copy(isScanning = false)
+                        } else {
+                            current.copy(
+                                isScanning = false,
+                                needsLocationToggleHint = needsLocHint,
+                                statusMessage = if (foundNewCount > 0) {
+                                    "Se encontraron $foundNewCount dispositivos cercanos. Toca uno para vincularlo."
+                                } else {
+                                    "Búsqueda finalizada. Si tu impresora nueva no aparece, enciéndela y vuelve a buscar."
+                                },
+                            )
+                        }
+                    }
+                }
+
+                BluetoothDevice.ACTION_BOND_STATE_CHANGED -> {
+                    val device = IntentCompat.getParcelableExtra(
+                        intent,
+                        BluetoothDevice.EXTRA_DEVICE,
+                        BluetoothDevice::class.java,
+                    ) ?: return
+                    val address = device.address ?: return
+                    val bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)
+                    val prevState = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, BluetoothDevice.ERROR)
+                    val devName = try {
+                        if (hasBluetoothPermission()) {
+                            device.name?.takeIf { it.isNotBlank() }
+                        } else {
+                            null
+                        }
+                    } catch (_: SecurityException) {
+                        null
+                    } ?: discoveredBluetoothMap[address]?.name ?: "Impresora Bluetooth"
+
+                    when (bondState) {
+                        BluetoothDevice.BOND_BONDING -> {
+                            _discoveryState.update {
+                                it.copy(
+                                    pairingAddress = address,
+                                    errorMessage = null,
+                                    statusMessage = "Vinculando con $devName... Si pide PIN, suele ser 0000 o 1234.",
+                                )
+                            }
+                        }
+
+                        BluetoothDevice.BOND_BONDED -> {
+                            val paired = PairedPrinterDevice(
+                                name = devName,
+                                address = address,
+                                type = "BLUETOOTH",
+                                isPaired = true,
+                                isPrinterLikely = true,
+                            )
+                            discoveredBluetoothMap[address] = paired
+                            refreshKnownPrinters()
+                            _discoveryState.update {
+                                it.copy(
+                                    pairingAddress = null,
+                                    errorMessage = null,
+                                    statusMessage = "¡Impresora vinculada y lista: $devName!",
+                                )
+                            }
+                            if (pendingPairAddress == address) {
+                                val cb = pendingPairSuccess
+                                clearPendingPairCallbacks()
+                                cb?.invoke(paired)
+                            }
+                        }
+
+                        BluetoothDevice.BOND_NONE -> {
+                            if (prevState == BluetoothDevice.BOND_BONDING || pendingPairAddress == address) {
+                                val err = "No se pudo vincular con $devName. Verifica que esté encendida o revisa el PIN (0000 / 1234)."
+                                _discoveryState.update {
+                                    it.copy(
+                                        pairingAddress = null,
+                                        errorMessage = err,
+                                        statusMessage = null,
+                                    )
+                                }
+                                if (pendingPairAddress == address) {
+                                    val failCb = pendingPairFailure
+                                    clearPendingPairCallbacks()
+                                    failCb?.invoke(err)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun bluetoothAdapter(): BluetoothAdapter? {
+        val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        return manager?.adapter
+    }
+
+    private fun isLikelyThermalPrinter(name: String?, majorClass: Int?): Boolean {
+        if (majorClass == BluetoothClass.Device.Major.IMAGING) return true
+        val lower = name?.lowercase(Locale.ROOT).orEmpty()
+        return PRINTER_KEYWORDS.any { lower.contains(it) }
+    }
+
+    private fun isLocationEnabledForLegacyScan(): Boolean {
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return true
+        return LocationManagerCompat.isLocationEnabled(lm)
+    }
+
+    fun getRequiredScanPermissions(): Array<String> {
+        return when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+            )
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+            )
+            else -> arrayOf(
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+            )
+        }
     }
 
     fun hasBluetoothPermission(): Boolean {
@@ -59,19 +332,571 @@ class ThermalPrinterManager(private val context: Context) {
         }
     }
 
+    fun hasBluetoothScanPermission(): Boolean {
+        return getRequiredScanPermissions().all { perm ->
+            ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    fun isBluetoothSupported(): Boolean = bluetoothAdapter() != null
+
+    fun isBluetoothEnabled(): Boolean = bluetoothAdapter()?.isEnabled == true
+
+    private fun ensureReceiverRegistered() {
+        synchronized(receiverLock) {
+            if (isReceiverRegistered) return
+            val filter = IntentFilter().apply {
+                addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+                addAction(BluetoothAdapter.ACTION_DISCOVERY_STARTED)
+                addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
+                addAction(BluetoothDevice.ACTION_FOUND)
+                addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+            }
+            ContextCompat.registerReceiver(
+                context,
+                discoveryReceiver,
+                filter,
+                ContextCompat.RECEIVER_EXPORTED,
+            )
+            isReceiverRegistered = true
+        }
+    }
+
+    private fun clearPendingPairCallbacks() {
+        pendingPairAddress = null
+        pendingPairSuccess = null
+        pendingPairFailure = null
+    }
+
+    private fun rebuildAvailablePrinters() {
+        val pairedBt = getPairedBluetoothPrinters()
+        val pairedAddresses = pairedBt.map { it.address }.toSet()
+        pairedBt.forEach { discoveredBluetoothMap[it.address] = it }
+
+        val discoveredOnly = discoveredBluetoothMap.values
+            .filter { it.address !in pairedAddresses && !it.isPaired }
+            .sortedWith(
+                compareByDescending<PairedPrinterDevice> { it.isPrinterLikely }
+                    .thenBy { it.name.startsWith("Dispositivo Bluetooth") }
+                    .thenBy { it.name.lowercase(Locale.ROOT) },
+            )
+        val usb = getConnectedUsbPrinters()
+        _availablePrinters.value = pairedBt + usb + discoveredOnly
+    }
+
+    fun refreshKnownPrinters() {
+        val adapter = bluetoothAdapter()
+        _discoveryState.update {
+            it.copy(
+                isBluetoothSupported = adapter != null,
+                isBluetoothEnabled = adapter?.isEnabled == true,
+            )
+        }
+        rebuildAvailablePrinters()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun upsertDiscoveredDevice(device: BluetoothDevice, fallbackName: String? = null) {
+        val address = device.address?.takeIf { it.isNotBlank() } ?: return
+        val rawName = try {
+            if (hasBluetoothPermission()) device.name?.trim().orEmpty() else ""
+        } catch (_: SecurityException) {
+            ""
+        }.ifBlank { fallbackName?.trim().orEmpty() }
+        val bonded = try {
+            if (hasBluetoothPermission()) device.bondState == BluetoothDevice.BOND_BONDED else false
+        } catch (_: SecurityException) {
+            false
+        }
+        val majorClass = try {
+            if (hasBluetoothPermission()) device.bluetoothClass?.majorDeviceClass else null
+        } catch (_: SecurityException) {
+            null
+        }
+        val existing = discoveredBluetoothMap[address]
+        val resolvedName = when {
+            rawName.isNotBlank() -> rawName
+            existing != null && !existing.name.startsWith("Dispositivo Bluetooth") -> existing.name
+            else -> "Dispositivo Bluetooth (${address.takeLast(5)})"
+        }
+        val likely = isLikelyThermalPrinter(resolvedName, majorClass) || (existing?.isPrinterLikely == true)
+        discoveredBluetoothMap[address] = PairedPrinterDevice(
+            name = resolvedName,
+            address = address,
+            type = "BLUETOOTH",
+            isPaired = bonded,
+            isPrinterLikely = likely,
+        )
+        rebuildAvailablePrinters()
+    }
+
+    @SuppressLint("MissingPermission")
+    fun toPrinterDevice(device: BluetoothDevice): PairedPrinterDevice {
+        val address = device.address ?: ""
+        val name = try {
+            if (hasBluetoothPermission()) device.name?.takeIf { it.isNotBlank() } else null
+        } catch (_: SecurityException) {
+            null
+        } ?: "Impresora Bluetooth"
+        val bonded = try {
+            if (hasBluetoothPermission()) device.bondState == BluetoothDevice.BOND_BONDED else false
+        } catch (_: SecurityException) {
+            false
+        }
+        val majorClass = try {
+            if (hasBluetoothPermission()) device.bluetoothClass?.majorDeviceClass else null
+        } catch (_: SecurityException) {
+            null
+        }
+        return PairedPrinterDevice(
+            name = name,
+            address = address,
+            type = "BLUETOOTH",
+            isPaired = bonded,
+            isPrinterLikely = isLikelyThermalPrinter(name, majorClass),
+        )
+    }
+
+    fun isLocationRequiredAndDisabled(): Boolean {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.S && !isLocationEnabledForLegacyScan()
+    }
+
+    fun supportsCompanionDevicePicker(): Boolean {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            context.packageManager.hasSystemFeature(PackageManager.FEATURE_COMPANION_DEVICE_SETUP)
+    }
+
+    fun launchCompanionDevicePicker(
+        onLauncherReady: (IntentSender) -> Unit,
+        onFailure: (String) -> Unit,
+    ) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || !supportsCompanionDevicePicker()) {
+            onFailure("Este dispositivo no soporta el asistente del sistema.")
+            return
+        }
+        val manager = context.getSystemService(Context.COMPANION_DEVICE_SERVICE) as? CompanionDeviceManager
+        if (manager == null) {
+            onFailure("Asistente Bluetooth no disponible en este teléfono.")
+            return
+        }
+        val filter = BluetoothDeviceFilter.Builder().build()
+        val request = AssociationRequest.Builder()
+            .addDeviceFilter(filter)
+            .setSingleDevice(false)
+            .build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            manager.associate(
+                request,
+                ContextCompat.getMainExecutor(context),
+                object : CompanionDeviceManager.Callback() {
+                    override fun onAssociationPending(intentSender: IntentSender) {
+                        onLauncherReady(intentSender)
+                    }
+
+                    override fun onFailure(error: CharSequence?) {
+                        onFailure(error?.toString()?.takeIf { it.isNotBlank() } ?: "No se encontraron impresoras cercanas.")
+                    }
+                },
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            manager.associate(
+                request,
+                object : CompanionDeviceManager.Callback() {
+                    override fun onDeviceFound(chooserLauncher: IntentSender) {
+                        onLauncherReady(chooserLauncher)
+                    }
+
+                    override fun onFailure(error: CharSequence?) {
+                        onFailure(error?.toString()?.takeIf { it.isNotBlank() } ?: "No se encontraron impresoras cercanas.")
+                    }
+                },
+                Handler(Looper.getMainLooper()),
+            )
+        }
+    }
+
+    fun extractCompanionDevice(data: Intent?): BluetoothDevice? {
+        if (data == null) return null
+        val direct = IntentCompat.getParcelableExtra(
+            data,
+            CompanionDeviceManager.EXTRA_DEVICE,
+            BluetoothDevice::class.java,
+        )
+        if (direct != null) return direct
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val info = IntentCompat.getParcelableExtra(
+                data,
+                CompanionDeviceManager.EXTRA_ASSOCIATION,
+                AssociationInfo::class.java,
+            )
+            return info?.associatedDevice?.bluetoothDevice
+        }
+        return null
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startBleFallbackScan(adapter: BluetoothAdapter): Boolean {
+        if (!hasBluetoothScanPermission()) return false
+        val scanner = try {
+            adapter.bluetoothLeScanner
+        } catch (_: Exception) {
+            null
+        } ?: return false
+
+        stopBleScanOnly()
+        val callback = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult?) {
+                val dev = result?.device ?: return
+                val scanName = result.scanRecord?.deviceName
+                upsertDiscoveredDevice(dev, scanName)
+            }
+
+            override fun onBatchScanResults(results: MutableList<ScanResult>?) {
+                results?.forEach { res ->
+                    res.device?.let { upsertDiscoveredDevice(it, res.scanRecord?.deviceName) }
+                }
+            }
+
+            override fun onScanFailed(errorCode: Int) {
+                stopBleScanOnly()
+                _discoveryState.update {
+                    it.copy(
+                        isScanning = false,
+                        errorMessage = "No se pudo escanear por Bluetooth (código $errorCode). Usa el Asistente o Ajustes Bluetooth.",
+                    )
+                }
+            }
+        }
+        return try {
+            val settings = ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .build()
+            scanner.startScan(null, settings, callback)
+            activeLeScanner = scanner
+            activeLeCallback = callback
+            _discoveryState.update {
+                it.copy(
+                    isBluetoothSupported = true,
+                    isBluetoothEnabled = true,
+                    isScanning = true,
+                    errorMessage = null,
+                    needsLocationToggleHint = false,
+                    statusMessage = "Buscando impresoras Bluetooth cercanas...",
+                )
+            }
+            true
+        } catch (_: Exception) {
+            activeLeScanner = null
+            activeLeCallback = null
+            false
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun stopBleScanOnly() {
+        val cb = activeLeCallback ?: return
+        val scanner = activeLeScanner
+        activeLeCallback = null
+        activeLeScanner = null
+        if (scanner != null && hasBluetoothScanPermission()) {
+            try {
+                scanner.stopScan(cb)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun prepareDiscoveryPrechecks(): Result<BluetoothAdapter> {
+        val adapter = bluetoothAdapter()
+        if (adapter == null) {
+            val msg = "Este dispositivo no cuenta con Bluetooth."
+            _discoveryState.update {
+                it.copy(isBluetoothSupported = false, isScanning = false, errorMessage = msg)
+            }
+            refreshKnownPrinters()
+            return Result.failure(IllegalStateException(msg))
+        }
+        if (!hasBluetoothScanPermission()) {
+            val msg = "Otorga el permiso de Bluetooth para buscar impresoras cercanas."
+            _discoveryState.update { it.copy(isScanning = false, errorMessage = msg) }
+            refreshKnownPrinters()
+            return Result.failure(IllegalStateException(msg))
+        }
+        if (!adapter.isEnabled && adapter.state != BluetoothAdapter.STATE_TURNING_ON) {
+            val msg = "Enciende el Bluetooth para buscar impresoras nuevas."
+            _discoveryState.update {
+                it.copy(isBluetoothEnabled = false, isScanning = false, errorMessage = msg)
+            }
+            refreshKnownPrinters()
+            return Result.failure(IllegalStateException(msg))
+        }
+        if (isLocationRequiredAndDisabled()) {
+            val msg = "Activa la Ubicación del teléfono para que Android permita detectar impresoras nuevas."
+            _discoveryState.update {
+                it.copy(
+                    isScanning = false,
+                    needsLocationToggleHint = true,
+                    errorMessage = msg,
+                )
+            }
+            refreshKnownPrinters()
+            return Result.failure(IllegalStateException(msg))
+        }
+        return Result.success(adapter)
+    }
+
+    @SuppressLint("MissingPermission")
+    suspend fun startDiscoveryWithFallback(): Result<Unit> {
+        val adapter = prepareDiscoveryPrechecks().getOrElse { return Result.failure(it) }
+
+        if (adapter.state == BluetoothAdapter.STATE_TURNING_ON) {
+            var waited = 0
+            while (adapter.state == BluetoothAdapter.STATE_TURNING_ON && waited < 1800) {
+                delay(150)
+                waited += 150
+            }
+        }
+        if (!adapter.isEnabled) {
+            val msg = "Enciende el Bluetooth para buscar impresoras nuevas."
+            _discoveryState.update {
+                it.copy(isBluetoothEnabled = false, isScanning = false, errorMessage = msg)
+            }
+            return Result.failure(IllegalStateException(msg))
+        }
+
+        ensureReceiverRegistered()
+        discoveredBluetoothMap.keys.toList().forEach { key ->
+            if (discoveredBluetoothMap[key]?.isPaired == false) {
+                discoveredBluetoothMap.remove(key)
+            }
+        }
+        refreshKnownPrinters()
+
+        return try {
+            if (adapter.isDiscovering) {
+                adapter.cancelDiscovery()
+                delay(400)
+            }
+            var started = adapter.startDiscovery()
+            if (!started) {
+                delay(350)
+                started = adapter.startDiscovery()
+            }
+            if (started) {
+                _discoveryState.update {
+                    it.copy(
+                        isBluetoothSupported = true,
+                        isBluetoothEnabled = true,
+                        isScanning = true,
+                        errorMessage = null,
+                        needsLocationToggleHint = false,
+                        statusMessage = "Buscando impresoras Bluetooth cercanas...",
+                    )
+                }
+                Result.success(Unit)
+            } else if (startBleFallbackScan(adapter)) {
+                Result.success(Unit)
+            } else {
+                val msg = if (supportsCompanionDevicePicker()) {
+                    "Tu teléfono bloqueó la búsqueda directa. Toca 'Asistente del sistema' para elegir tu impresora."
+                } else {
+                    "No se pudo iniciar la búsqueda directa. Usa 'Ajustes Bluetooth' para vincularla."
+                }
+                _discoveryState.update { it.copy(isScanning = false, errorMessage = msg) }
+                Result.failure(IllegalStateException(msg))
+            }
+        } catch (e: SecurityException) {
+            val msg = "Permiso de búsqueda Bluetooth denegado."
+            _discoveryState.update { it.copy(isScanning = false, errorMessage = msg) }
+            Result.failure(e)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun startDiscovery(): Result<Unit> {
+        val adapter = prepareDiscoveryPrechecks().getOrElse { return Result.failure(it) }
+
+        ensureReceiverRegistered()
+        // Conserva vinculadas actuales y limpia hallazgos anteriores sin vincular para una búsqueda fresca
+        discoveredBluetoothMap.keys.toList().forEach { key ->
+            if (discoveredBluetoothMap[key]?.isPaired == false) {
+                discoveredBluetoothMap.remove(key)
+            }
+        }
+        refreshKnownPrinters()
+
+        return try {
+            val started = if (adapter.isDiscovering) {
+                true
+            } else {
+                adapter.startDiscovery()
+            }
+            if (started) {
+                _discoveryState.update {
+                    it.copy(
+                        isBluetoothSupported = true,
+                        isBluetoothEnabled = true,
+                        isScanning = true,
+                        errorMessage = null,
+                        needsLocationToggleHint = false,
+                        statusMessage = "Buscando impresoras Bluetooth cercanas...",
+                    )
+                }
+                Result.success(Unit)
+            } else if (startBleFallbackScan(adapter)) {
+                Result.success(Unit)
+            } else {
+                val msg = "No se pudo iniciar la búsqueda directa. Toca 'Asistente del sistema' o 'Ajustes Bluetooth'."
+                _discoveryState.update { it.copy(isScanning = false, errorMessage = msg) }
+                Result.failure(IllegalStateException(msg))
+            }
+        } catch (e: SecurityException) {
+            val msg = "Permiso de búsqueda Bluetooth denegado."
+            _discoveryState.update { it.copy(isScanning = false, errorMessage = msg) }
+            Result.failure(e)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun stopDiscovery() {
+        stopBleScanOnly()
+        val adapter = bluetoothAdapter()
+        if (adapter != null && hasBluetoothScanPermission()) {
+            try {
+                if (adapter.isDiscovering) {
+                    adapter.cancelDiscovery()
+                }
+            } catch (_: SecurityException) {
+            }
+        }
+        _discoveryState.update { it.copy(isScanning = false) }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun pairPrinter(
+        device: PairedPrinterDevice,
+        onPaired: (PairedPrinterDevice) -> Unit,
+        onFailure: (String) -> Unit,
+    ) {
+        val adapter = bluetoothAdapter()
+        if (adapter == null || !adapter.isEnabled) {
+            val msg = "Enciende el Bluetooth antes de vincular la impresora."
+            _discoveryState.update { it.copy(pairingAddress = null, errorMessage = msg) }
+            onFailure(msg)
+            return
+        }
+        if (!hasBluetoothPermission()) {
+            val msg = "Otorga el permiso de conexión Bluetooth para vincular la impresora."
+            _discoveryState.update { it.copy(pairingAddress = null, errorMessage = msg) }
+            onFailure(msg)
+            return
+        }
+
+        ensureReceiverRegistered()
+        if (hasBluetoothScanPermission()) {
+            try {
+                if (adapter.isDiscovering) {
+                    adapter.cancelDiscovery()
+                }
+            } catch (_: SecurityException) {
+            }
+        }
+        _discoveryState.update { it.copy(isScanning = false) }
+
+        try {
+            val remote = adapter.getRemoteDevice(device.address)
+            if (remote.bondState == BluetoothDevice.BOND_BONDED) {
+                val ready = device.copy(isPaired = true)
+                discoveredBluetoothMap[device.address] = ready
+                refreshKnownPrinters()
+                _discoveryState.update {
+                    it.copy(
+                        pairingAddress = null,
+                        errorMessage = null,
+                        statusMessage = "¡Impresora lista: ${ready.name}!",
+                    )
+                }
+                onPaired(ready)
+                return
+            }
+
+            pendingPairAddress = device.address
+            pendingPairSuccess = onPaired
+            pendingPairFailure = onFailure
+
+            _discoveryState.update {
+                it.copy(
+                    pairingAddress = device.address,
+                    errorMessage = null,
+                    statusMessage = "Vinculando con ${device.name}... Acepta la solicitud en tu pantalla.",
+                )
+            }
+            val started = remote.createBond()
+            if (!started) {
+                clearPendingPairCallbacks()
+                val msg = "No se pudo iniciar la vinculación con ${device.name}. Asegúrate de que esté encendida y cerca."
+                _discoveryState.update {
+                    it.copy(pairingAddress = null, errorMessage = msg, statusMessage = null)
+                }
+                onFailure(msg)
+            }
+        } catch (_: Exception) {
+            clearPendingPairCallbacks()
+            val msg = "Error al vincular con ${device.name}. Intenta de nuevo."
+            _discoveryState.update {
+                it.copy(pairingAddress = null, errorMessage = msg, statusMessage = null)
+            }
+            onFailure(msg)
+        }
+    }
+
+    fun cancelPendingPairingTimeout() {
+        val currentAddr = pendingPairAddress ?: return
+        val name = discoveredBluetoothMap[currentAddr]?.name ?: "la impresora"
+        clearPendingPairCallbacks()
+        _discoveryState.update {
+            it.copy(
+                pairingAddress = null,
+                errorMessage = "Tiempo de espera agotado al vincular con $name. Intenta tocar Vincular de nuevo.",
+                statusMessage = null,
+            )
+        }
+    }
+
+    fun release() {
+        stopDiscovery()
+        clearPendingPairCallbacks()
+        synchronized(receiverLock) {
+            if (isReceiverRegistered) {
+                try {
+                    context.unregisterReceiver(discoveryReceiver)
+                } catch (_: IllegalArgumentException) {
+                }
+                isReceiverRegistered = false
+            }
+        }
+    }
+
     @SuppressLint("MissingPermission")
     fun getPairedBluetoothPrinters(): List<PairedPrinterDevice> {
         if (!hasBluetoothPermission()) return emptyList()
-        val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-        val adapter: BluetoothAdapter = manager?.adapter ?: return emptyList()
+        val adapter: BluetoothAdapter = bluetoothAdapter() ?: return emptyList()
         return try {
             adapter.bondedDevices?.map { device: BluetoothDevice ->
+                val devName = device.name?.takeIf { it.isNotBlank() } ?: "Impresora Bluetooth"
+                val majorClass = device.bluetoothClass?.majorDeviceClass
                 PairedPrinterDevice(
-                    name = device.name ?: "Impresora Bluetooth",
+                    name = devName,
                     address = device.address ?: "",
                     type = "BLUETOOTH",
+                    isPaired = true,
+                    isPrinterLikely = isLikelyThermalPrinter(devName, majorClass),
                 )
-            } ?: emptyList()
+            }?.sortedWith(
+                compareByDescending<PairedPrinterDevice> { it.isPrinterLikely }
+                    .thenBy { it.name.lowercase(Locale.ROOT) },
+            ) ?: emptyList()
         } catch (_: SecurityException) {
             emptyList()
         }
@@ -84,6 +909,8 @@ class ThermalPrinterManager(private val context: Context) {
                 name = dev.productName ?: "Impresora USB (${dev.vendorId}:${dev.productId})",
                 address = dev.deviceName,
                 type = "USB",
+                isPaired = true,
+                isPrinterLikely = true,
             )
         }
     }

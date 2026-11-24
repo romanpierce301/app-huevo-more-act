@@ -1,11 +1,18 @@
 package com.example.ui.screens
 
 import android.Manifest
+import android.app.Activity
+import android.bluetooth.BluetoothAdapter
+import android.content.Intent
+import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -17,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -25,18 +33,26 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.BluetoothConnected
+import androidx.compose.material.icons.filled.BluetoothDisabled
+import androidx.compose.material.icons.filled.BluetoothSearching
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FolderZip
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -44,6 +60,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -57,10 +74,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.data.local.entity.BackupRecordEntity
 import com.example.data.local.entity.BusinessSettingsEntity
 import com.example.data.local.entity.ClientEntity
 import com.example.domain.CalculationEngine
+import com.example.system.BluetoothDiscoveryState
 import com.example.system.PairedPrinterDevice
 import com.example.ui.components.AuroraCard
 import com.example.ui.components.AuroraEmptyState
@@ -258,15 +279,21 @@ fun ConfiguracionScreen(
     settings: BusinessSettingsEntity,
     clients: List<ClientWithDebt>,
     printers: List<PairedPrinterDevice>,
+    bluetoothState: BluetoothDiscoveryState = BluetoothDiscoveryState(),
     onOpenDrawer: () -> Unit,
     onSaveBusinessConfig: (phone: String, address: String, slogan: String, globalPriceText: String) -> Unit,
     onUpdateClientSpecialPrice: (clientId: Long, specialPriceText: String) -> Unit,
     onRefreshPrinters: () -> Unit,
+    onStartPrinterScan: () -> Unit = onRefreshPrinters,
+    onStopPrinterScan: () -> Unit = {},
+    onLaunchSystemBluetoothPicker: ((IntentSender) -> Unit) -> Unit = {},
+    onHandleSystemBluetoothPickerResult: (Intent?) -> Unit = {},
     onSelectPrinterType: (String) -> Unit,
     onSelectPrinter: (PairedPrinterDevice) -> Unit,
     onTestPrinter: () -> Unit,
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     var phone by remember(settings.phone) { mutableStateOf(settings.phone) }
     var address by remember(settings.address) { mutableStateOf(settings.address) }
     var slogan by remember(settings.slogan) { mutableStateOf(settings.slogan) }
@@ -274,15 +301,97 @@ fun ConfiguracionScreen(
         mutableStateOf(if (settings.globalPricePerKg > 0.0) settings.globalPricePerKg.toString() else "")
     }
     var editingSpecialClient by remember { mutableStateOf<ClientEntity?>(null) }
+    var permissionDeniedNotice by remember { mutableStateOf(false) }
+
+    val requiredScanPermissions = remember {
+        when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+            )
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+            )
+            else -> arrayOf(
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+            )
+        }
+    }
+
+    val supportsCompanionPicker = remember {
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            context.packageManager.hasSystemFeature(PackageManager.FEATURE_COMPANION_DEVICE_SETUP)
+    }
+
+    val companionPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult(),
+    ) { res ->
+        if (res.resultCode == Activity.RESULT_OK) {
+            onHandleSystemBluetoothPickerResult(res.data)
+        }
+    }
+
+    val enableBluetoothLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) {
+        onRefreshPrinters()
+        val adapter = (context.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter
+        if (adapter?.isEnabled == true) {
+            onStartPrinterScan()
+        }
+    }
+
+    fun launchSearchOrEnableFlow() {
+        if (settings.printerType == "USB") {
+            onRefreshPrinters()
+            return
+        }
+        val missing = requiredScanPermissions.filter {
+            ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) {
+            permissionDeniedNotice = false
+            val adapter = (context.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter
+            if (adapter != null && !adapter.isEnabled) {
+                runCatching {
+                    enableBluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                }.onFailure {
+                    runCatching { context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
+                }
+            } else {
+                onStartPrinterScan()
+            }
+        }
+    }
 
     val btPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
-    ) { _ ->
-        onRefreshPrinters()
+    ) { result ->
+        val allGranted = result.values.isNotEmpty() && result.values.all { it }
+        if (allGranted) {
+            permissionDeniedNotice = false
+            launchSearchOrEnableFlow()
+        } else {
+            permissionDeniedNotice = true
+            onRefreshPrinters()
+        }
     }
 
     LaunchedEffect(Unit) {
         onRefreshPrinters()
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                onRefreshPrinters()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            onStopPrinterScan()
+        }
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -413,12 +522,25 @@ fun ConfiguracionScreen(
 
             // Impresora Térmica 60 mm (Bluetooth y USB OTG)
             item {
+                val readyPrinters = remember(printers) { printers.filter { it.isPaired || it.type == "USB" } }
+                val nearbyNewPrinters = remember(printers) { printers.filter { !it.isPaired && it.type == "BLUETOOTH" } }
+                val isBluetoothMode = settings.printerType != "USB"
+
                 AuroraCard {
-                    Text(
-                        text = "Impresora Térmica 60 mm",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = OnSurface,
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Impresora Térmica 60 mm",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = OnSurface,
+                        )
+                        if (bluetoothState.isScanning) {
+                            AuroraStatusBadge(text = "Buscando...", tint = Secondary)
+                        }
+                    }
                     Spacer(Modifier.height(10.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -454,15 +576,144 @@ fun ConfiguracionScreen(
                     }
 
                     Spacer(Modifier.height(10.dp))
-                    Text(
-                        text = if (settings.printerName.isNotBlank()) {
-                            "Seleccionada: ${settings.printerName} (${settings.printerType})"
-                        } else {
-                            "Ninguna impresora seleccionada"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Secondary,
-                    )
+                    Surface(
+                        color = SurfaceContainerLow,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, OutlineVariant),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Icon(
+                                imageVector = if (settings.printerName.isNotBlank()) Icons.Default.CheckCircle else Icons.Default.Print,
+                                contentDescription = null,
+                                tint = if (settings.printerName.isNotBlank()) PrimaryGlow else Secondary,
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (settings.printerName.isNotBlank()) {
+                                        "Impresora activa: ${settings.printerName}"
+                                    } else {
+                                        "Ninguna impresora seleccionada"
+                                    },
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = OnSurface,
+                                )
+                                Text(
+                                    text = if (settings.printerName.isNotBlank()) {
+                                        "Modo ${if (settings.printerType == "USB") "USB OTG" else "Bluetooth"} listo para imprimir."
+                                    } else {
+                                        "Enciende tu impresora y toca Buscar Impresoras para detectarla y vincularla."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = OnSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+
+                    // Aviso amigable si el Bluetooth del teléfono está apagado
+                    AnimatedVisibility(visible = isBluetoothMode && bluetoothState.isBluetoothSupported && !bluetoothState.isBluetoothEnabled) {
+                        Surface(
+                            color = Secondary.copy(alpha = 0.14f),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Secondary.copy(alpha = 0.45f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 10.dp),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Icon(Icons.Default.BluetoothDisabled, contentDescription = null, tint = Secondary)
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "El Bluetooth está apagado",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = OnSurface,
+                                    )
+                                    Text(
+                                        text = "Enciéndelo con un toque para buscar impresoras nuevas.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = OnSurfaceVariant,
+                                    )
+                                }
+                                Button(
+                                    onClick = {
+                                        val missing = requiredScanPermissions.filter {
+                                            ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
+                                        }
+                                        if (missing.isNotEmpty()) {
+                                            btPermissionLauncher.launch(missing.toTypedArray())
+                                        } else {
+                                            runCatching {
+                                                enableBluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                                            }.onFailure {
+                                                runCatching { context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
+                                            }
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Secondary, contentColor = OnPrimary),
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .testTag("enable_bluetooth_button"),
+                                ) {
+                                    Text("Encender")
+                                }
+                            }
+                        }
+                    }
+
+                    // Aviso amigable si falta permiso de Bluetooth
+                    AnimatedVisibility(visible = isBluetoothMode && permissionDeniedNotice) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 10.dp),
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    text = "Necesitamos permiso de Bluetooth cercano para encontrar y vincular tu impresora.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = OnSurface,
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    AuroraOutlinedButton(
+                                        text = "Conceder permiso",
+                                        icon = Icons.Default.BluetoothSearching,
+                                        onClick = { btPermissionLauncher.launch(requiredScanPermissions) },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    AuroraOutlinedButton(
+                                        text = "Ajustes",
+                                        icon = Icons.Default.Settings,
+                                        onClick = {
+                                            runCatching {
+                                                val appSettings = Intent(
+                                                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                                    Uri.fromParts("package", context.packageName, null),
+                                                )
+                                                context.startActivity(appSettings)
+                                            }
+                                        },
+                                        accentColor = Secondary,
+                                        modifier = Modifier.weight(0.8f),
+                                    )
+                                }
+                            }
+                        }
+                    }
 
                     Spacer(Modifier.height(10.dp))
                     Row(
@@ -470,23 +721,22 @@ fun ConfiguracionScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         AuroraOutlinedButton(
-                            text = "Buscar Impresoras",
-                            icon = Icons.Default.Refresh,
+                            text = if (bluetoothState.isScanning) "Detener búsqueda" else "Buscar Impresoras",
+                            icon = if (bluetoothState.isScanning) Icons.Default.Stop else if (isBluetoothMode) Icons.Default.BluetoothSearching else Icons.Default.Refresh,
                             onClick = {
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                    val needed = arrayOf(
-                                        Manifest.permission.BLUETOOTH_CONNECT,
-                                        Manifest.permission.BLUETOOTH_SCAN,
-                                    ).filter {
+                                if (bluetoothState.isScanning) {
+                                    onStopPrinterScan()
+                                } else if (!isBluetoothMode) {
+                                    onRefreshPrinters()
+                                } else {
+                                    val missing = requiredScanPermissions.filter {
                                         ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
                                     }
-                                    if (needed.isNotEmpty()) {
-                                        btPermissionLauncher.launch(needed.toTypedArray())
+                                    if (missing.isNotEmpty()) {
+                                        btPermissionLauncher.launch(missing.toTypedArray())
                                     } else {
-                                        onRefreshPrinters()
+                                        launchSearchOrEnableFlow()
                                     }
-                                } else {
-                                    onRefreshPrinters()
                                 }
                             },
                             modifier = Modifier.weight(1f),
@@ -502,11 +752,94 @@ fun ConfiguracionScreen(
                         )
                     }
 
-                    if (printers.isNotEmpty()) {
-                        Spacer(Modifier.height(10.dp))
+                    // Estado amigable durante búsqueda o vinculación
+                    val liveMessage = bluetoothState.errorMessage ?: bluetoothState.statusMessage
+                    AnimatedVisibility(visible = bluetoothState.isScanning || bluetoothState.pairingAddress != null || liveMessage != null) {
+                        Surface(
+                            color = if (bluetoothState.errorMessage != null) {
+                                MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.22f)
+                            } else {
+                                Primary.copy(alpha = 0.10f)
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(
+                                1.dp,
+                                if (bluetoothState.errorMessage != null) {
+                                    MaterialTheme.colorScheme.error.copy(alpha = 0.35f)
+                                } else {
+                                    Primary.copy(alpha = 0.30f)
+                                },
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 10.dp),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                if (bluetoothState.isScanning || bluetoothState.pairingAddress != null) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        strokeWidth = 2.4.dp,
+                                        color = Primary,
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Default.BluetoothConnected,
+                                        contentDescription = null,
+                                        tint = if (bluetoothState.errorMessage != null) MaterialTheme.colorScheme.error else Primary,
+                                    )
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = liveMessage.orEmpty(),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = OnSurface,
+                                    )
+                                    if (bluetoothState.isScanning) {
+                                        Text(
+                                            text = "Asegúrate de que la impresora esté encendida y cerca.",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = OnSurfaceVariant,
+                                        )
+                                    } else if (bluetoothState.needsLocationToggleHint) {
+                                        Text(
+                                            text = "En Android 11 o anterior, activa la Ubicación del teléfono o usa el Asistente del sistema.",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Secondary,
+                                        )
+                                        Spacer(Modifier.height(6.dp))
+                                        AuroraOutlinedButton(
+                                            text = "Activar Ubicación",
+                                            icon = Icons.Default.Settings,
+                                            onClick = {
+                                                runCatching {
+                                                    context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                                                }
+                                            },
+                                            accentColor = Secondary,
+                                            testTag = "open_location_settings_button",
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Lista 1: Impresoras ya vinculadas / USB listas para usar
+                    if (readyPrinters.isNotEmpty()) {
+                        Spacer(Modifier.height(12.dp))
                         HorizontalDivider(color = Primary.copy(alpha = 0.14f))
                         Spacer(Modifier.height(8.dp))
-                        printers.forEach { dev ->
+                        Text(
+                            text = "Impresoras vinculadas y listas (${readyPrinters.size})",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = OnSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        readyPrinters.forEach { dev ->
                             val isSelected = settings.printerAddress == dev.address && settings.printerType == dev.type
                             Surface(
                                 onClick = { onSelectPrinter(dev) },
@@ -515,22 +848,201 @@ fun ConfiguracionScreen(
                                 border = BorderStroke(1.dp, if (isSelected) Primary else OutlineVariant),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(vertical = 4.dp),
+                                    .padding(vertical = 4.dp)
+                                    .testTag("printer_ready_${dev.address}"),
                             ) {
                                 Row(
                                     modifier = Modifier.padding(12.dp),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    Column {
+                                    Column(modifier = Modifier.weight(1f)) {
                                         Text(dev.name, style = MaterialTheme.typography.titleSmall, color = OnSurface)
-                                        Text("${dev.type} • ${dev.address}", style = MaterialTheme.typography.bodySmall, color = OnSurfaceVariant)
+                                        Text(
+                                            text = "${if (dev.type == "USB") "USB OTG" else "Bluetooth vinculada"} • ${dev.address}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = OnSurfaceVariant,
+                                        )
                                     }
-                                    if (isSelected) {
-                                        AuroraStatusBadge(text = "Activa", tint = PrimaryGlow)
+                                    Spacer(Modifier.width(8.dp))
+                                    AuroraStatusBadge(
+                                        text = if (isSelected) "Activa" else "Usar",
+                                        tint = if (isSelected) PrimaryGlow else Secondary,
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Lista 2: Nuevas impresoras o dispositivos encontrados para vincular con 1 toque
+                    if (nearbyNewPrinters.isNotEmpty()) {
+                        Spacer(Modifier.height(12.dp))
+                        HorizontalDivider(color = Secondary.copy(alpha = 0.18f))
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = "Dispositivos cercanos nuevos (${nearbyNewPrinters.size})",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = Secondary,
+                        )
+                        Text(
+                            text = "Toca uno para vincularlo y dejarlo listo automáticamente (si pide PIN suele ser 0000 o 1234).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = OnSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        nearbyNewPrinters.forEach { dev ->
+                            val isPairingThis = bluetoothState.pairingAddress == dev.address
+                            Surface(
+                                onClick = { if (!isPairingThis) onSelectPrinter(dev) },
+                                color = SurfaceContainerLowest,
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (dev.isPrinterLikely) Secondary.copy(alpha = 0.55f) else OutlineVariant,
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp)
+                                    .testTag("printer_discovered_${dev.address}"),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        ) {
+                                            Text(
+                                                text = dev.name,
+                                                style = MaterialTheme.typography.titleSmall,
+                                                color = OnSurface,
+                                            )
+                                            if (dev.isPrinterLikely) {
+                                                AuroraStatusBadge(text = "Impresora", tint = PrimaryGlow)
+                                            }
+                                        }
+                                        Text(
+                                            text = "Nuevo dispositivo • ${dev.address}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = OnSurfaceVariant,
+                                        )
+                                    }
+                                    Spacer(Modifier.width(8.dp))
+                                    if (isPairingThis) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        ) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(16.dp),
+                                                strokeWidth = 2.dp,
+                                                color = Primary,
+                                            )
+                                            Text(
+                                                text = "Vinculando...",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = Primary,
+                                            )
+                                        }
+                                    } else {
+                                        Surface(
+                                            color = Primary.copy(alpha = 0.16f),
+                                            shape = RoundedCornerShape(10.dp),
+                                            border = BorderStroke(1.dp, Primary.copy(alpha = 0.4f)),
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Link,
+                                                    contentDescription = null,
+                                                    tint = Primary,
+                                                    modifier = Modifier.size(16.dp),
+                                                )
+                                                Text(
+                                                    text = "Vincular",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = Primary,
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    if (readyPrinters.isEmpty() && nearbyNewPrinters.isEmpty() && !bluetoothState.isScanning) {
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            text = "No se detectan impresoras todavía. Enciende tu impresora y toca 'Buscar Impresoras'.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = OnSurfaceVariant,
+                        )
+                    }
+
+                    if (isBluetoothMode) {
+                        if (supportsCompanionPicker) {
+                            Spacer(Modifier.height(10.dp))
+                            AuroraOutlinedButton(
+                                text = "Buscar con Asistente del Sistema",
+                                icon = Icons.Default.BluetoothSearching,
+                                onClick = {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                                        ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+                                    ) {
+                                        btPermissionLauncher.launch(requiredScanPermissions)
+                                    } else {
+                                        val adapter = (context.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter
+                                        if (adapter != null && !adapter.isEnabled) {
+                                            runCatching {
+                                                enableBluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                                            }.onFailure {
+                                                runCatching { context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
+                                            }
+                                        } else {
+                                            onLaunchSystemBluetoothPicker { sender ->
+                                                runCatching {
+                                                    companionPickerLauncher.launch(IntentSenderRequest.Builder(sender).build())
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                accentColor = PrimaryGlow,
+                                testTag = "companion_bluetooth_picker_button",
+                            )
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        TextButton(
+                            onClick = {
+                                runCatching {
+                                    context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+                                }
+                            },
+                            modifier = Modifier
+                                .align(Alignment.End)
+                                .heightIn(min = 48.dp)
+                                .testTag("open_system_bluetooth_settings_button"),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Settings,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = OnSurfaceVariant,
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = "Abrir ajustes Bluetooth del teléfono",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = OnSurfaceVariant,
+                            )
                         }
                     }
                 }

@@ -181,6 +181,7 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
     val feedbackMessage by viewModel.feedbackMessage.collectAsStateWithLifecycle()
     val pendingSafSave by viewModel.pendingSafSave.collectAsStateWithLifecycle()
     val printers by viewModel.pairedPrinters.collectAsStateWithLifecycle()
+    val bluetoothState by viewModel.bluetoothDiscoveryState.collectAsStateWithLifecycle()
 
     val safCreateLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("*/*"),
@@ -616,10 +617,15 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                                 settings = settings,
                                 clients = clients,
                                 printers = printers,
+                                bluetoothState = bluetoothState,
                                 onOpenDrawer = { scope.launch { drawerState.open() } },
                                 onSaveBusinessConfig = viewModel::saveBusinessConfig,
                                 onUpdateClientSpecialPrice = viewModel::updateClientSpecialPrice,
                                 onRefreshPrinters = viewModel::refreshPrinters,
+                                onStartPrinterScan = viewModel::startPrinterScan,
+                                onStopPrinterScan = viewModel::stopPrinterScan,
+                                onLaunchSystemBluetoothPicker = viewModel::launchSystemBluetoothPicker,
+                                onHandleSystemBluetoothPickerResult = viewModel::handleSystemBluetoothPickerResult,
                                 onSelectPrinterType = viewModel::selectPrinterType,
                                 onSelectPrinter = viewModel::selectPrinter,
                                 onTestPrinter = viewModel::testPrinter,

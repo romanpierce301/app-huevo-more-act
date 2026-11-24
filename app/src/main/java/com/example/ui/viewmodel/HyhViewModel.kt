@@ -1,8 +1,10 @@
 package com.example.ui.viewmodel
 
 import android.app.Application
+import android.bluetooth.BluetoothDevice
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.IntentSender
 import android.graphics.Bitmap
 import android.net.Uri
 import androidx.core.content.FileProvider
@@ -26,7 +28,9 @@ import com.example.domain.DeliveryCalculationResult
 import com.example.domain.DeliveryModality
 import com.example.domain.PaymentMethod
 import com.example.domain.WeighedBoxItem
+import com.example.system.BluetoothDiscoveryState
 import com.example.system.PairedPrinterDevice
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -153,8 +157,11 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
     private val _pendingSafSave = MutableStateFlow<PendingSafSave?>(null)
     val pendingSafSave: StateFlow<PendingSafSave?> = _pendingSafSave.asStateFlow()
 
-    private val _pairedPrinters = MutableStateFlow<List<PairedPrinterDevice>>(emptyList())
-    val pairedPrinters: StateFlow<List<PairedPrinterDevice>> = _pairedPrinters.asStateFlow()
+    val pairedPrinters: StateFlow<List<PairedPrinterDevice>> = printerManager.availablePrinters
+    val bluetoothDiscoveryState: StateFlow<BluetoothDiscoveryState> = printerManager.discoveryState
+
+    private var scanTimeoutJob: Job? = null
+    private var pairTimeoutJob: Job? = null
 
     private val _dueTodayBannerReminders = MutableStateFlow<List<ReminderEntity>>(emptyList())
     val dueTodayBannerReminders: StateFlow<List<ReminderEntity>> = _dueTodayBannerReminders.asStateFlow()
@@ -861,16 +868,72 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshPrinters() {
-        val bt = printerManager.getPairedBluetoothPrinters()
-        val usb = printerManager.getConnectedUsbPrinters()
-        _pairedPrinters.value = bt + usb
+        printerManager.refreshKnownPrinters()
+    }
+
+    fun startPrinterScan() {
+        scanTimeoutJob?.cancel()
+        scanTimeoutJob = viewModelScope.launch {
+            printerManager.startDiscoveryWithFallback()
+                .onSuccess {
+                    delay(15_000)
+                    printerManager.stopDiscovery()
+                }
+                .onFailure { err ->
+                    _feedbackMessage.value = err.message ?: "No se pudo iniciar la búsqueda Bluetooth"
+                }
+        }
+    }
+
+    fun launchSystemBluetoothPicker(onLauncherReady: (IntentSender) -> Unit) {
+        stopPrinterScan()
+        printerManager.launchCompanionDevicePicker(
+            onLauncherReady = onLauncherReady,
+            onFailure = { msg -> _feedbackMessage.value = msg },
+        )
+    }
+
+    fun handleSystemBluetoothPickerResult(data: Intent?) {
+        val btDevice: BluetoothDevice = printerManager.extractCompanionDevice(data) ?: return
+        val printer = printerManager.toPrinterDevice(btDevice)
+        selectPrinter(printer)
+    }
+
+    fun stopPrinterScan() {
+        scanTimeoutJob?.cancel()
+        scanTimeoutJob = null
+        printerManager.stopDiscovery()
     }
 
     fun selectPrinter(device: PairedPrinterDevice) {
-        viewModelScope.launch {
-            repository.updatePrinterSettings(device.type, device.name, device.address)
-            _feedbackMessage.value = "Impresora seleccionada: ${device.name}"
+        if (device.type == "USB" || device.isPaired) {
+            viewModelScope.launch {
+                repository.updatePrinterSettings(device.type, device.name, device.address)
+                _feedbackMessage.value = "Impresora seleccionada: ${device.name}"
+            }
+            return
         }
+
+        scanTimeoutJob?.cancel()
+        pairTimeoutJob?.cancel()
+        pairTimeoutJob = viewModelScope.launch {
+            delay(35_000)
+            printerManager.cancelPendingPairingTimeout()
+        }
+        printerManager.pairPrinter(
+            device = device,
+            onPaired = { paired ->
+                pairTimeoutJob?.cancel()
+                viewModelScope.launch {
+                    repository.updatePrinterSettings(paired.type, paired.name, paired.address)
+                    _feedbackMessage.value = "¡Impresora vinculada y lista: ${paired.name}!"
+                }
+            },
+            onFailure = { errMsg ->
+                pairTimeoutJob?.cancel()
+                _feedbackMessage.value = errMsg
+            },
+        )
     }
 
     fun selectPrinterType(type: String) {
@@ -937,5 +1000,12 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
                 _feedbackMessage.value = it.message ?: "Error al actualizar plazo del cliente"
             }
         }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        scanTimeoutJob?.cancel()
+        pairTimeoutJob?.cancel()
+        printerManager.release()
     }
 }
