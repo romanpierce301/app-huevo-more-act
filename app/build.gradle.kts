@@ -19,6 +19,17 @@ android {
     versionCode = 3
     versionName = "1.2"
 
+    // Branding base (H y H HUEVOS)
+    buildConfigField("String", "BRAND_APP_NAME", "\"H y H HUEVOS\"")
+    buildConfigField("String", "BRAND_SLOGAN", "\"LOS MAS FRESCOS DE LA ZONA\"")
+    buildConfigField("String", "BRAND_PRIMARY", "\"#91D5AF\"")
+    buildConfigField("String", "BRAND_PRIMARY_CONTAINER", "\"#76B995\"")
+    buildConfigField("String", "BRAND_PRIMARY_GLOW", "\"#34D399\"")
+    buildConfigField("String", "BRAND_FILE_PREFIX", "\"HYH\"")
+    buildConfigField("String", "BRAND_TICKETS_FOLDER", "\"HYH_Huevos\"")
+    buildConfigField("String", "BRAND_CLOSINGS_FOLDER", "\"HYH_Cierres\"")
+    buildConfigField("String", "BRAND_BACKUPS_FOLDER", "\"HYH_Backups\"")
+
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
@@ -64,6 +75,28 @@ android {
     buildConfig = true
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
+
+  flavorDimensions += "brand"
+  productFlavors {
+    create("hyhhuevos") {
+      // Marca base (H y H HUEVOS). Usa el applicationId y recursos de main.
+    }
+    create("lili") {
+      // Variante: Distribuidora de Huevos LILI
+      applicationId = "com.aistudio.hyhhuevos.lili"
+      versionCode = 4
+      versionName = "1.3"
+      buildConfigField("String", "BRAND_APP_NAME", "\"Distribuidora de Huevos LILI\"")
+      buildConfigField("String", "BRAND_SLOGAN", "\"Tenemos los huevos que te hacen falta\"")
+      buildConfigField("String", "BRAND_PRIMARY", "\"#91D5AF\"")
+      buildConfigField("String", "BRAND_PRIMARY_CONTAINER", "\"#76B995\"")
+      buildConfigField("String", "BRAND_PRIMARY_GLOW", "\"#34D399\"")
+      buildConfigField("String", "BRAND_FILE_PREFIX", "\"LILI\"")
+      buildConfigField("String", "BRAND_TICKETS_FOLDER", "\"LILI_Tickets\"")
+      buildConfigField("String", "BRAND_CLOSINGS_FOLDER", "\"LILI_Cierres\"")
+      buildConfigField("String", "BRAND_BACKUPS_FOLDER", "\"LILI_Backups\"")
+    }
+  }
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true

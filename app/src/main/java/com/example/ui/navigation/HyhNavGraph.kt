@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Store
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
@@ -75,7 +76,9 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.example.R
+import com.example.BuildConfig
 import com.example.domain.CalculationEngine
+import com.example.data.local.entity.SalesChannel
 import com.example.ui.components.AuroraBackground
 import com.example.ui.components.AuroraConfirmationDialog
 import com.example.ui.components.AuroraStatusBadge
@@ -127,10 +130,18 @@ object HyhRoutes {
     const val RESPALDOS_LOCALES = "respaldos_locales"
     const val CREDITO_CONFIG = "credito_config"
     const val CONFIGURACION = "configuracion"
+    const val CREMERIA = "cremeria"
+    const val CREMERIA_NUEVA_ENTREGA = "cremeria_nueva_entrega"
+    const val CREMERIA_PAGO = "cremeria_pago"
+    const val CREMERIA_FIRMA_DIGITAL = "cremeria_firma_digital"
+    const val CREMERIA_TICKET = "cremeria_ticket/{deliveryId}"
+    const val CREMERIA_PERFIL_CLIENTE = "cremeria_perfil_cliente/{clientId}"
 
     fun perfilCliente(clientId: Long) = "perfil_cliente/$clientId"
     fun ticket(deliveryId: Long) = "ticket/$deliveryId"
     fun detalleCierre(closingId: Long) = "detalle_cierre/$closingId"
+    fun cremeriaTicket(deliveryId: Long) = "cremeria_ticket/$deliveryId"
+    fun cremeriaPerfilCliente(clientId: Long) = "cremeria_perfil_cliente/$clientId"
 }
 
 private data class DrawerModuleItem(
@@ -140,19 +151,26 @@ private data class DrawerModuleItem(
     val tag: String,
 )
 
-private val drawerModules = listOf(
-    DrawerModuleItem(HyhRoutes.PANEL_PRINCIPAL, "Panel Principal", Icons.Default.Dashboard, "drawer_panel"),
-    DrawerModuleItem(HyhRoutes.CLIENTES, "Clientes", Icons.Default.People, "drawer_clientes"),
-    DrawerModuleItem(HyhRoutes.NUEVA_ENTREGA, "Nueva Entrega", Icons.Default.AddCircleOutline, "drawer_nueva_entrega"),
-    DrawerModuleItem(HyhRoutes.ENTREGAS_REALIZADAS, "Entregas Realizadas", Icons.Default.ReceiptLong, "drawer_entregas"),
-    DrawerModuleItem(HyhRoutes.COMPRAS_HUEVO, "Compras de Huevo", Icons.Default.AddShoppingCart, "drawer_compras"),
-    DrawerModuleItem(HyhRoutes.INVENTARIO, "Inventario", Icons.Default.Inventory2, "drawer_inventario"),
-    DrawerModuleItem(HyhRoutes.RECORDATORIOS, "Recordatorios", Icons.Default.NotificationsActive, "drawer_recordatorios"),
-    DrawerModuleItem(HyhRoutes.CIERRES_DIARIOS, "Cierres Diarios", Icons.Default.PointOfSale, "drawer_cierres"),
-    DrawerModuleItem(HyhRoutes.RESPALDOS_LOCALES, "Respaldos Locales", Icons.Default.FolderZip, "drawer_respaldos"),
-    DrawerModuleItem(HyhRoutes.CREDITO_CONFIG, "Crédito y Leyenda", Icons.Default.Schedule, "drawer_credito_config"),
-    DrawerModuleItem(HyhRoutes.CONFIGURACION, "Configuración", Icons.Default.Settings, "drawer_configuracion"),
-)
+private val drawerModules = buildList {
+    addAll(listOf(
+        DrawerModuleItem(HyhRoutes.PANEL_PRINCIPAL, "Panel Principal", Icons.Default.Dashboard, "drawer_panel"),
+        DrawerModuleItem(HyhRoutes.CLIENTES, "Clientes", Icons.Default.People, "drawer_clientes"),
+        DrawerModuleItem(HyhRoutes.NUEVA_ENTREGA, "Nueva Entrega", Icons.Default.AddCircleOutline, "drawer_nueva_entrega"),
+        DrawerModuleItem(HyhRoutes.ENTREGAS_REALIZADAS, "Entregas Realizadas", Icons.Default.ReceiptLong, "drawer_entregas"),
+    ))
+    if (BuildConfig.FLAVOR == "lili") {
+        add(DrawerModuleItem(HyhRoutes.CREMERIA, "Cremería del Patrón", Icons.Default.Store, "drawer_cremeria"))
+    }
+    addAll(listOf(
+        DrawerModuleItem(HyhRoutes.COMPRAS_HUEVO, "Compras de Huevo", Icons.Default.AddShoppingCart, "drawer_compras"),
+        DrawerModuleItem(HyhRoutes.INVENTARIO, "Inventario", Icons.Default.Inventory2, "drawer_inventario"),
+        DrawerModuleItem(HyhRoutes.RECORDATORIOS, "Recordatorios", Icons.Default.NotificationsActive, "drawer_recordatorios"),
+        DrawerModuleItem(HyhRoutes.CIERRES_DIARIOS, "Cierres Diarios", Icons.Default.PointOfSale, "drawer_cierres"),
+        DrawerModuleItem(HyhRoutes.RESPALDOS_LOCALES, "Respaldos Locales", Icons.Default.FolderZip, "drawer_respaldos"),
+        DrawerModuleItem(HyhRoutes.CREDITO_CONFIG, "Crédito y Leyenda", Icons.Default.Schedule, "drawer_credito_config"),
+        DrawerModuleItem(HyhRoutes.CONFIGURACION, "Configuración", Icons.Default.Settings, "drawer_configuracion"),
+    ))
+}
 
 private val topLevelDrawerRoutes = drawerModules.map { it.route }.toSet()
 
@@ -171,6 +189,9 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
     val inventoryBrands by viewModel.inventoryBrands.collectAsStateWithLifecycle()
     val sugarInventory by viewModel.sugarInventory.collectAsStateWithLifecycle()
     val deliveries by viewModel.deliveries.collectAsStateWithLifecycle()
+    val cremeriaDeliveries by viewModel.cremeriaDeliveries.collectAsStateWithLifecycle()
+    val cremeriaClients by viewModel.cremeriaClientsWithDebt.collectAsStateWithLifecycle()
+    val cremeriaAbonos by viewModel.activeCremeriaAbonos.collectAsStateWithLifecycle()
     val activeAbonos by viewModel.activeAbonos.collectAsStateWithLifecycle()
     val reminders by viewModel.reminders.collectAsStateWithLifecycle()
     val dueTodayReminders by viewModel.dueTodayBannerReminders.collectAsStateWithLifecycle()
@@ -178,9 +199,11 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
     val backups by viewModel.backups.collectAsStateWithLifecycle()
     val overlayState by viewModel.overlayState.collectAsStateWithLifecycle()
     val draft by viewModel.deliveryDraft.collectAsStateWithLifecycle()
+    val cremeriaDraft by viewModel.cremeriaDraft.collectAsStateWithLifecycle()
     val feedbackMessage by viewModel.feedbackMessage.collectAsStateWithLifecycle()
     val pendingSafSave by viewModel.pendingSafSave.collectAsStateWithLifecycle()
     val printers by viewModel.pairedPrinters.collectAsStateWithLifecycle()
+    val isScanningPrinters by viewModel.isScanningPrinters.collectAsStateWithLifecycle()
 
     val safCreateLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("*/*"),
@@ -212,7 +235,8 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
             scope.launch { drawerState.close() }
             return
         }
-        if (currentRoute == HyhRoutes.NUEVA_ENTREGA && draft.hasCapturedData) {
+        if ((currentRoute == HyhRoutes.NUEVA_ENTREGA && draft.hasCapturedData) ||
+            (currentRoute == HyhRoutes.CREMERIA_NUEVA_ENTREGA && cremeriaDraft.hasCapturedData)) {
             scope.launch { drawerState.close() }
             pendingDrawerDestination = route
             return
@@ -221,6 +245,7 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
         if (route == HyhRoutes.NUEVA_ENTREGA) {
             viewModel.startDeliveryForClient(null)
         }
+        if (route == HyhRoutes.CREMERIA) viewModel.startDeliveryForClient(null, true)
         navController.navigate(route) {
             popUpTo(HyhRoutes.PANEL_PRINCIPAL) { saveState = false }
             launchSingleTop = true
@@ -251,7 +276,7 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                         ) {
                             Image(
                                 painter = painterResource(R.drawable.img_welcome_hero),
-                                contentDescription = "Logotipo H y H HUEVOS",
+                                contentDescription = "Logotipo ${BuildConfig.BRAND_APP_NAME}",
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier
                                     .size(50.dp)
@@ -418,16 +443,16 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                                 clients = clients,
                                 inventoryBrands = inventoryBrands,
                                 settings = settings,
-                                onSelectClient = viewModel::selectDraftClient,
-                                onUpdateBrand = viewModel::updateDraftBrand,
-                                onUpdateModality = viewModel::updateDraftModality,
-                                onUpdateWeight = viewModel::updateDraftWeight,
-                                onUpdatePricePerKg = viewModel::updateDraftPricePerKg,
-                                onUpdateSugarSacks = viewModel::updateDraftSugarSacks,
-                                onUpdateSugarWeightPerSack = viewModel::updateDraftSugarWeightPerSack,
-                                onUpdateSugarPricePerSack = viewModel::updateDraftSugarPricePerSack,
-                                onAddBoxItem = viewModel::addWeighedBoxItem,
-                                onRemoveBoxItem = viewModel::removeWeighedBoxItem,
+                                onSelectClient = { viewModel.selectDraftClient(it) },
+                                onUpdateBrand = { viewModel.updateDraftBrand(it) },
+                                onUpdateModality = { viewModel.updateDraftModality(it) },
+                                onUpdateWeight = { viewModel.updateDraftWeight(it) },
+                                onUpdatePricePerKg = { viewModel.updateDraftPricePerKg(it) },
+                                onUpdateSugarSacks = { viewModel.updateDraftSugarSacks(it) },
+                                onUpdateSugarWeightPerSack = { viewModel.updateDraftSugarWeightPerSack(it) },
+                                onUpdateSugarPricePerSack = { viewModel.updateDraftSugarPricePerSack(it) },
+                                onAddBoxItem = { viewModel.addWeighedBoxItem() },
+                                onRemoveBoxItem = { viewModel.removeWeighedBoxItem(it) },
                                 onContinueToPayment = {
                                     navController.navigate(HyhRoutes.PAGO)
                                 },
@@ -449,8 +474,8 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                                 clientWithDebt = selectedClientWithDebt,
                                 settings = settings,
                                 onBack = { navController.popBackStack() },
-                                onSelectPaymentMethod = viewModel::updateDraftPaymentMethod,
-                                onUpdateInitialAbono = viewModel::updateDraftInitialAbono,
+                                onSelectPaymentMethod = { viewModel.updateDraftPaymentMethod(it) },
+                                onUpdateInitialAbono = { viewModel.updateDraftInitialAbono(it) },
                                 onConfirmContado = {
                                     viewModel.finalizeDelivery(signatureBitmap = null) { deliveryId ->
                                         navController.navigate(HyhRoutes.ticket(deliveryId)) {
@@ -502,7 +527,7 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                                 onShareWhatsApp = viewModel::shareDeliveryPdfWhatsApp,
                                 onDownloadPdf = viewModel::downloadDeliveryPdf,
                                 onDownloadJson = viewModel::downloadDeliveryJson,
-                                onCancelDelivery = viewModel::cancelDelivery,
+                                onCancelDelivery = { id, reason -> viewModel.cancelDelivery(id, reason) },
                             )
                         }
 
@@ -517,7 +542,95 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                                         navController.navigate(HyhRoutes.ticket(deliveryId))
                                     }
                                 },
-                                onCancelDelivery = viewModel::cancelDelivery,
+                                onCancelDelivery = { id, reason -> viewModel.cancelDelivery(id, reason) },
+                            )
+                        }
+
+                        composable(HyhRoutes.CREMERIA) {
+                            BackHandler { navigateToTopModule(HyhRoutes.PANEL_PRINCIPAL) }
+                            EntregasRealizadasScreen(
+                                deliveries = cremeriaDeliveries,
+                                onEnterScreenLoading = viewModel::runDeliveriesHistoryLoading,
+                                onOpenDrawer = { scope.launch { drawerState.open() } },
+                                onOpenTicket = { id -> viewModel.openTicketWithLoading { navController.navigate(HyhRoutes.cremeriaTicket(id)) } },
+                                onCancelDelivery = { id, reason -> viewModel.cancelDelivery(id, reason, true) },
+                                title = "Cremería del Patrón",
+                                newDeliveryLabel = "Nueva venta para Cremería",
+                                onNewDelivery = {
+                                    viewModel.startDeliveryForClient(null, true)
+                                    navController.navigate(HyhRoutes.CREMERIA_NUEVA_ENTREGA)
+                                },
+                                onOpenClientProfile = { id -> navController.navigate(HyhRoutes.cremeriaPerfilCliente(id)) },
+                            )
+                        }
+
+                        composable(HyhRoutes.CREMERIA_NUEVA_ENTREGA) {
+                            NuevaEntregaScreen(
+                                draft = cremeriaDraft, clients = cremeriaClients, inventoryBrands = inventoryBrands, settings = settings,
+                                onSelectClient = { viewModel.selectDraftClient(it, true) },
+                                onUpdateBrand = { viewModel.updateDraftBrand(it, true) },
+                                onUpdateModality = { viewModel.updateDraftModality(it, true) },
+                                onUpdateWeight = { viewModel.updateDraftWeight(it, true) },
+                                onUpdatePricePerKg = { viewModel.updateDraftPricePerKg(it, true) },
+                                onUpdateSugarSacks = { viewModel.updateDraftSugarSacks(it, true) },
+                                onUpdateSugarWeightPerSack = { viewModel.updateDraftSugarWeightPerSack(it, true) },
+                                onUpdateSugarPricePerSack = { viewModel.updateDraftSugarPricePerSack(it, true) },
+                                onAddBoxItem = { viewModel.addWeighedBoxItem(true) },
+                                onRemoveBoxItem = { viewModel.removeWeighedBoxItem(it, true) },
+                                onContinueToPayment = { navController.navigate(HyhRoutes.CREMERIA_PAGO) },
+                                onExitDelivery = {
+                                    viewModel.clearDeliveryDraft(true)
+                                    if (!navController.popBackStack()) navController.navigate(HyhRoutes.CREMERIA) { launchSingleTop = true }
+                                },
+                                screenTitle = "Venta para Cremería",
+                                screenSubtitle = "Cremería del Patrón • Huevo Lili",
+                                fixedClientName = SalesChannel.CREMERIA_CLIENT_NAME,
+                            )
+                        }
+
+                        composable(HyhRoutes.CREMERIA_PAGO) {
+                            val selected = cremeriaClients.firstOrNull { it.client.id == cremeriaDraft.clientId }
+                            PagoScreen(
+                                draft = cremeriaDraft, clientWithDebt = selected, settings = settings,
+                                onBack = { navController.popBackStack() },
+                                onSelectPaymentMethod = { viewModel.updateDraftPaymentMethod(it, true) },
+                                onUpdateInitialAbono = { viewModel.updateDraftInitialAbono(it, true) },
+                                onConfirmContado = { viewModel.finalizeDelivery(null, true) { id -> navController.navigate(HyhRoutes.cremeriaTicket(id)) { popUpTo(HyhRoutes.CREMERIA_NUEVA_ENTREGA) { inclusive = true } } } },
+                                onProceedToCreditSignature = { navController.navigate(HyhRoutes.CREMERIA_FIRMA_DIGITAL) },
+                                screenSubtitle = "Cremería del Patrón • Huevo Lili",
+                            )
+                        }
+
+                        composable(HyhRoutes.CREMERIA_FIRMA_DIGITAL) {
+                            val cw = cremeriaClients.firstOrNull { it.client.id == cremeriaDraft.clientId }
+                            val calc = viewModel.computeDraftCalculation(cremeriaDraft, settings, cremeriaClients)
+                            val abono = CalculationEngine.parsePositiveDecimal(cremeriaDraft.initialAbonoInput).coerceIn(BigDecimal.ZERO, calc.finalAmountMxn)
+                            FirmaDigitalScreen(
+                                clientName = cw?.client?.name ?: "Cliente", pendingAmountMxn = calc.finalAmountMxn.subtract(abono),
+                                onBack = { navController.popBackStack() },
+                                onConfirmSignature = { bmp -> viewModel.finalizeDelivery(bmp, true) { id -> navController.navigate(HyhRoutes.cremeriaTicket(id)) { popUpTo(HyhRoutes.CREMERIA_NUEVA_ENTREGA) { inclusive = true } } } },
+                            )
+                        }
+
+                        composable(HyhRoutes.CREMERIA_TICKET, arguments = listOf(navArgument("deliveryId") { type = NavType.LongType })) { entry ->
+                            val id = entry.arguments?.getLong("deliveryId") ?: 0L
+                            val delivery = cremeriaDeliveries.firstOrNull { it.id == id }
+                            val client = delivery?.let { d -> cremeriaClients.firstOrNull { it.client.id == d.clientId }?.client }
+                            TicketScreen(delivery, client, settings, { navController.popBackStack() }, viewModel::printDeliveryTicket,
+                                viewModel::shareDeliveryPdfWhatsApp, viewModel::downloadDeliveryPdf, viewModel::downloadDeliveryJson,
+                                { deliveryId, reason -> viewModel.cancelDelivery(deliveryId, reason, true) })
+                        }
+
+                        composable(HyhRoutes.CREMERIA_PERFIL_CLIENTE, arguments = listOf(navArgument("clientId") { type = NavType.LongType })) { entry ->
+                            val id = entry.arguments?.getLong("clientId") ?: 0L
+                            val client = cremeriaClients.firstOrNull { it.client.id == id }?.client
+                            PerfilClienteScreen(
+                                client = client, deliveries = cremeriaDeliveries.filter { it.clientId == id },
+                                abonos = cremeriaAbonos.filter { it.clientId == id }, settings = settings,
+                                onBack = { navController.popBackStack() },
+                                onStartNewDeliveryForClient = { cid -> viewModel.startDeliveryForClient(cid, true); navController.navigate(HyhRoutes.CREMERIA_NUEVA_ENTREGA) },
+                                onRecordAbono = { cid, did, amount, note, done -> viewModel.recordAbono(cid, did, amount, note, done, true) },
+                                onOpenTicket = { did -> viewModel.openTicketWithLoading { navController.navigate(HyhRoutes.cremeriaTicket(did)) } },
                             )
                         }
 
@@ -596,6 +709,7 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                                 onSaveBackupToDownloads = viewModel::saveExistingBackupToDownloads,
                                 onRestoreFromUri = viewModel::restoreFromUri,
                                 onRestoreFromRecord = viewModel::restoreFromRecord,
+                                backupFolderName = BuildConfig.BRAND_BACKUPS_FOLDER,
                             )
                         }
 
@@ -620,6 +734,10 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                                 onSaveBusinessConfig = viewModel::saveBusinessConfig,
                                 onUpdateClientSpecialPrice = viewModel::updateClientSpecialPrice,
                                 onRefreshPrinters = viewModel::refreshPrinters,
+                                onScanPrinters = viewModel::scanPrinters,
+                                onStopPrinterScan = viewModel::stopPrinterScan,
+                                onPrinterPermissionDenied = { viewModel.showFeedback("Para buscar la impresora, permite los permisos Bluetooth solicitados.") },
+                                isScanningPrinters = isScanningPrinters,
                                 onSelectPrinterType = viewModel::selectPrinterType,
                                 onSelectPrinter = viewModel::selectPrinter,
                                 onTestPrinter = viewModel::testPrinter,
@@ -644,10 +762,12 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
             isDangerConfirm = true,
             onConfirm = {
                 pendingDrawerDestination = null
-                viewModel.clearDeliveryDraft()
+                val leavingCremeriaFlow = currentRoute == HyhRoutes.CREMERIA_NUEVA_ENTREGA
+                viewModel.clearDeliveryDraft(leavingCremeriaFlow)
                 if (dest == HyhRoutes.NUEVA_ENTREGA) {
                     viewModel.startDeliveryForClient(null)
                 }
+                if (dest == HyhRoutes.CREMERIA) viewModel.startDeliveryForClient(null, true)
                 navController.navigate(dest) {
                     popUpTo(HyhRoutes.PANEL_PRINCIPAL) { saveState = false }
                     launchSingleTop = true

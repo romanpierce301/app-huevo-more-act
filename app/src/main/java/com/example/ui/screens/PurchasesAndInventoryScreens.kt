@@ -56,6 +56,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.BuildConfig
 import com.example.data.local.entity.EggPurchaseEntity
 import com.example.data.local.entity.InventoryBrandEntity
 import com.example.data.local.entity.SugarInventoryEntity
@@ -620,7 +621,7 @@ fun InventarioScreen(
                 }
             }
 
-            // Imagen de bodega H y H
+            // Imagen de almacén
             item {
                 Box(
                     modifier = Modifier
@@ -632,7 +633,7 @@ fun InventarioScreen(
                 ) {
                     Image(
                         painter = painterResource(R.drawable.img_eggs_warehouse),
-                        contentDescription = "Almacén H y H HUEVOS",
+                        contentDescription = "Almacén ${BuildConfig.BRAND_APP_NAME}",
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize(),
                     )

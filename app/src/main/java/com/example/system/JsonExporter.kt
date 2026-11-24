@@ -10,6 +10,7 @@ import com.example.data.local.entity.EggPurchaseEntity
 import com.example.data.local.entity.InventoryBrandEntity
 import com.example.data.local.entity.ReminderEntity
 import com.example.data.local.entity.SugarInventoryEntity
+import com.example.BuildConfig
 import com.example.data.local.entity.SugarPurchaseEntity
 import org.json.JSONArray
 import org.json.JSONObject
@@ -33,6 +34,7 @@ object JsonExporter {
             put("telefono_negocio", settings.phone)
             put("direccion_negocio", settings.address)
             put("folio", delivery.folio)
+            put("canal_venta", delivery.salesChannel)
             put("fecha", isoFormat.format(Date(delivery.dateMillis)))
             put("fecha_millis", delivery.dateMillis)
             put("cliente_id", delivery.clientId)
@@ -157,6 +159,7 @@ object JsonExporter {
                     JSONObject().apply {
                         put("id", d.id)
                         put("folio", d.folio)
+                        put("salesChannel", d.salesChannel)
                         put("clientId", d.clientId)
                         put("clientName", d.clientName)
                         put("dateMillis", d.dateMillis)
@@ -199,6 +202,7 @@ object JsonExporter {
                         put("dateMillis", a.dateMillis)
                         put("note", a.note)
                         put("isCancelled", a.isCancelled)
+                        put("salesChannel", a.salesChannel)
                     },
                 )
             }
@@ -255,7 +259,9 @@ object JsonExporter {
             put("printerType", settings.printerType)
             put("printerName", settings.printerName)
             put("printerAddress", settings.printerAddress)
+            put("printerTransport", settings.printerTransport)
             put("nextFolioSequence", settings.nextFolioSequence)
+            put("nextCremeriaFolioSequence", settings.nextCremeriaFolioSequence)
             put("nextClosingSequence", settings.nextClosingSequence)
             put("creditTermDays", settings.creditTermDays)
             put("creditMoratoriumInterestPercent", settings.creditMoratoriumInterestPercent)
@@ -318,7 +324,7 @@ object JsonExporter {
     ): File {
         val dir = File(context.filesDir, "backups").apply { mkdirs() }
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val zipFile = File(dir, "Respaldo_HYH_$stamp.zip")
+        val zipFile = File(dir, "Respaldo_${BuildConfig.BRAND_FILE_PREFIX}_$stamp.zip")
 
         val fullJson = buildFullDatabaseJson(
             settings = settings,
@@ -334,7 +340,7 @@ object JsonExporter {
         )
 
         val metadataJson = JSONObject().apply {
-            put("app", "H y H HUEVOS")
+            put("app", BuildConfig.BRAND_APP_NAME)
             put("eslogan", settings.slogan)
             put("fecha_respaldo", isoFormat.format(Date()))
             put("total_clientes", clients.size)

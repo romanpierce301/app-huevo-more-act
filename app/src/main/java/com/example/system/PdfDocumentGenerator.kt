@@ -17,6 +17,7 @@ import com.example.data.local.entity.BusinessSettingsEntity
 import com.example.data.local.entity.ClientEntity
 import com.example.data.local.entity.DailyClosingEntity
 import com.example.data.local.entity.DeliveryEntity
+import com.example.data.local.entity.SalesChannel
 import com.example.domain.CalculationEngine
 import com.example.domain.DeliveryModality
 import com.example.domain.PaymentMethod
@@ -252,6 +253,10 @@ object PdfDocumentGenerator {
 
         boldPaint.textSize = 6.8f
         y = drawWrapped(canvas, "COMPROBANTE DE REMISIÓN", boldPaint, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
+        if (delivery.salesChannel == SalesChannel.CREMERIA) {
+            boldPaint.textSize = 5.8f
+            y = drawWrapped(canvas, "VENTA PARA CREMERÍA DEL PATRÓN", boldPaint, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
+        }
         boldPaint.textSize = 8.4f
         y = drawWrapped(canvas, delivery.folio, boldPaint, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
         y += 2f

@@ -98,23 +98,44 @@ interface HyhDao {
     suspend fun upsertSugarInventory(inventory: SugarInventoryEntity)
 
     // --- Deliveries ---
-    @Query("SELECT * FROM deliveries ORDER BY dateMillis DESC, id DESC")
+    @Query("SELECT * FROM deliveries WHERE salesChannel = 'PUBLIC' ORDER BY dateMillis DESC, id DESC")
     fun observeDeliveries(): Flow<List<DeliveryEntity>>
 
     @Query("SELECT * FROM deliveries ORDER BY dateMillis DESC, id DESC")
     suspend fun getAllDeliveriesOnce(): List<DeliveryEntity>
 
-    @Query("SELECT * FROM deliveries WHERE id = :id")
+    @Query("SELECT * FROM deliveries WHERE salesChannel = 'PUBLIC' ORDER BY dateMillis DESC, id DESC")
+    suspend fun getPublicDeliveriesOnce(): List<DeliveryEntity>
+
+    @Query("SELECT * FROM deliveries WHERE salesChannel = 'CREMERIA' ORDER BY dateMillis DESC, id DESC")
+    fun observeCremeriaDeliveries(): Flow<List<DeliveryEntity>>
+
+    @Query("SELECT * FROM deliveries WHERE salesChannel = 'CREMERIA' ORDER BY dateMillis DESC, id DESC")
+    suspend fun getAllCremeriaDeliveriesOnce(): List<DeliveryEntity>
+
+    @Query("SELECT * FROM deliveries WHERE id = :id AND salesChannel = 'PUBLIC'")
     fun observeDeliveryById(id: Long): Flow<DeliveryEntity?>
 
-    @Query("SELECT * FROM deliveries WHERE id = :id")
+    @Query("SELECT * FROM deliveries WHERE id = :id AND salesChannel = 'PUBLIC'")
     suspend fun getDeliveryById(id: Long): DeliveryEntity?
 
-    @Query("SELECT * FROM deliveries WHERE clientId = :clientId ORDER BY dateMillis DESC, id DESC")
+    @Query("SELECT * FROM deliveries WHERE id = :id AND salesChannel = 'CREMERIA'")
+    fun observeCremeriaDeliveryById(id: Long): Flow<DeliveryEntity?>
+
+    @Query("SELECT * FROM deliveries WHERE id = :id AND salesChannel = 'CREMERIA'")
+    suspend fun getCremeriaDeliveryById(id: Long): DeliveryEntity?
+
+    @Query("SELECT * FROM deliveries WHERE clientId = :clientId AND salesChannel = 'PUBLIC' ORDER BY dateMillis DESC, id DESC")
     fun observeDeliveriesForClient(clientId: Long): Flow<List<DeliveryEntity>>
 
-    @Query("SELECT COALESCE(SUM(pendingBalanceMxn), 0.0) FROM deliveries WHERE clientId = :clientId AND status = 'ACTIVA'")
+    @Query("SELECT * FROM deliveries WHERE clientId = :clientId AND salesChannel = 'CREMERIA' ORDER BY dateMillis DESC, id DESC")
+    fun observeCremeriaDeliveriesForClient(clientId: Long): Flow<List<DeliveryEntity>>
+
+    @Query("SELECT COALESCE(SUM(pendingBalanceMxn), 0.0) FROM deliveries WHERE clientId = :clientId AND status = 'ACTIVA' AND salesChannel = 'PUBLIC'")
     suspend fun getActiveDebtForClient(clientId: Long): Double
+
+    @Query("SELECT COALESCE(SUM(pendingBalanceMxn), 0.0) FROM deliveries WHERE clientId = :clientId AND status = 'ACTIVA' AND salesChannel = 'CREMERIA'")
+    suspend fun getActiveCremeriaDebtForClient(clientId: Long): Double
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertDelivery(delivery: DeliveryEntity): Long
@@ -123,20 +144,32 @@ interface HyhDao {
     suspend fun updateDelivery(delivery: DeliveryEntity)
 
     // --- Abonos ---
-    @Query("SELECT * FROM abonos WHERE isCancelled = 0 ORDER BY dateMillis DESC, id DESC")
+    @Query("SELECT * FROM abonos WHERE isCancelled = 0 AND salesChannel = 'PUBLIC' ORDER BY dateMillis DESC, id DESC")
     fun observeActiveAbonos(): Flow<List<AbonoEntity>>
 
     @Query("SELECT * FROM abonos ORDER BY dateMillis DESC, id DESC")
     suspend fun getAllAbonosOnce(): List<AbonoEntity>
 
-    @Query("SELECT * FROM abonos WHERE clientId = :clientId AND isCancelled = 0 ORDER BY dateMillis DESC, id DESC")
+    @Query("SELECT * FROM abonos WHERE salesChannel = 'PUBLIC' ORDER BY dateMillis DESC, id DESC")
+    suspend fun getAllPublicAbonosOnce(): List<AbonoEntity>
+
+    @Query("SELECT * FROM abonos WHERE isCancelled = 0 AND salesChannel = 'CREMERIA' ORDER BY dateMillis DESC, id DESC")
+    fun observeActiveCremeriaAbonos(): Flow<List<AbonoEntity>>
+
+    @Query("SELECT * FROM abonos WHERE clientId = :clientId AND isCancelled = 0 AND salesChannel = 'PUBLIC' ORDER BY dateMillis DESC, id DESC")
     fun observeAbonosForClient(clientId: Long): Flow<List<AbonoEntity>>
+
+    @Query("SELECT * FROM abonos WHERE clientId = :clientId AND isCancelled = 0 AND salesChannel = 'CREMERIA' ORDER BY dateMillis DESC, id DESC")
+    fun observeCremeriaAbonosForClient(clientId: Long): Flow<List<AbonoEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAbono(abono: AbonoEntity): Long
 
-    @Query("UPDATE abonos SET isCancelled = 1 WHERE deliveryId = :deliveryId")
+    @Query("UPDATE abonos SET isCancelled = 1 WHERE deliveryId = :deliveryId AND salesChannel = 'PUBLIC'")
     suspend fun markAbonosCancelledForDelivery(deliveryId: Long)
+
+    @Query("UPDATE abonos SET isCancelled = 1 WHERE deliveryId = :deliveryId AND salesChannel = 'CREMERIA'")
+    suspend fun markCremeriaAbonosCancelledForDelivery(deliveryId: Long)
 
     // --- Reminders ---
     @Query("SELECT * FROM reminders ORDER BY isCompleted ASC, deliveryDateMillis ASC, id DESC")

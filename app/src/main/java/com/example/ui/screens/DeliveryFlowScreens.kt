@@ -114,6 +114,9 @@ fun NuevaEntregaScreen(
     onRemoveBoxItem: (Long) -> Unit,
     onContinueToPayment: () -> Unit,
     onExitDelivery: () -> Unit,
+    screenTitle: String = "Nueva Entrega",
+    screenSubtitle: String? = null,
+    fixedClientName: String? = null,
 ) {
     var showExitDialog by remember { mutableStateOf(false) }
     var showClientPicker by remember { mutableStateOf(false) }
@@ -155,8 +158,8 @@ fun NuevaEntregaScreen(
 
     Column(modifier = Modifier.fillMaxSize()) {
         AuroraTopBar(
-            title = "Nueva Entrega",
-            subtitle = settings.businessName,
+            title = screenTitle,
+            subtitle = screenSubtitle ?: settings.businessName,
             showDrawerMenu = false,
             onMenuOrBackClick = { showExitDialog = true },
             trailingBadge = {
@@ -172,7 +175,7 @@ fun NuevaEntregaScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            // 1. Selector de Cliente
+            // 1. Destino fijo en ventas de Cremería; selector de cliente para ventas públicas.
             AuroraCard {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -181,12 +184,18 @@ fun NuevaEntregaScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "CLIENTE SELECCIONADO",
+                            text = if (fixedClientName == null) "CLIENTE SELECCIONADO" else "DESTINO DE VENTA",
                             style = MaterialTheme.typography.labelSmall,
                             color = Secondary,
                         )
                         Spacer(Modifier.height(4.dp))
-                        if (selectedClient != null) {
+                        if (fixedClientName != null) {
+                            Text(
+                                text = fixedClientName,
+                                style = MaterialTheme.typography.titleLarge,
+                                color = OnSurface,
+                            )
+                        } else if (selectedClient != null) {
                             Text(
                                 text = selectedClient.name,
                                 style = MaterialTheme.typography.titleLarge,
@@ -205,12 +214,14 @@ fun NuevaEntregaScreen(
                             )
                         }
                     }
-                    AuroraOutlinedButton(
-                        text = if (selectedClient == null) "Elegir" else "Cambiar",
-                        icon = Icons.Default.SwapHoriz,
-                        onClick = { showClientPicker = true },
-                        testTag = "select_client_button",
-                    )
+                    if (fixedClientName == null) {
+                        AuroraOutlinedButton(
+                            text = if (selectedClient == null) "Elegir" else "Cambiar",
+                            icon = Icons.Default.SwapHoriz,
+                            onClick = { showClientPicker = true },
+                            testTag = "select_client_button",
+                        )
+                    }
                 }
             }
 
@@ -824,7 +835,7 @@ fun NuevaEntregaScreen(
         )
     }
 
-    if (showClientPicker) {
+    if (showClientPicker && fixedClientName == null) {
         ClientSelectorDialog(
             clients = clients,
             globalPrice = settings.globalPricePerKg,
@@ -925,6 +936,7 @@ fun PagoScreen(
     onUpdateInitialAbono: (String) -> Unit,
     onConfirmContado: () -> Unit,
     onProceedToCreditSignature: () -> Unit,
+    screenSubtitle: String? = null,
 ) {
     val client = clientWithDebt?.client
     val typedPriceBd = remember(draft.pricePerKgInput) {
@@ -961,7 +973,7 @@ fun PagoScreen(
     Column(modifier = Modifier.fillMaxSize()) {
         AuroraTopBar(
             title = "Pago",
-            subtitle = settings.businessName,
+            subtitle = screenSubtitle ?: settings.businessName,
             showDrawerMenu = false,
             onMenuOrBackClick = onBack,
         )

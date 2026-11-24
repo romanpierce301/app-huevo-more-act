@@ -237,6 +237,10 @@ fun EntregasRealizadasScreen(
     onOpenDrawer: () -> Unit,
     onOpenTicket: (Long) -> Unit,
     onCancelDelivery: (deliveryId: Long, reason: String) -> Unit,
+    title: String = "Entregas Realizadas",
+    newDeliveryLabel: String? = null,
+    onNewDelivery: (() -> Unit)? = null,
+    onOpenClientProfile: ((Long) -> Unit)? = null,
 ) {
     LaunchedEffect(Unit) {
         onEnterScreenLoading()
@@ -266,7 +270,7 @@ fun EntregasRealizadasScreen(
 
     Column(modifier = Modifier.fillMaxSize()) {
         AuroraTopBar(
-            title = "Entregas Realizadas",
+            title = title,
             subtitle = "${deliveries.size} notas registradas",
             showDrawerMenu = true,
             onMenuOrBackClick = onOpenDrawer,
@@ -287,6 +291,17 @@ fun EntregasRealizadasScreen(
                     testTag = "search_deliveries_input",
                     modifier = Modifier.widthIn(max = 600.dp),
                 )
+            }
+
+            if (onNewDelivery != null && newDeliveryLabel != null) {
+                item {
+                    AuroraPrimaryButton(
+                        text = newDeliveryLabel,
+                        icon = Icons.Default.ReceiptLong,
+                        onClick = onNewDelivery,
+                        testTag = "new_channel_delivery_button",
+                    )
+                }
             }
 
             item {
@@ -449,6 +464,15 @@ fun EntregasRealizadasScreen(
                                     testTag = "cancel_delivery_button_${delivery.id}",
                                 )
                             }
+                        }
+                        if (onOpenClientProfile != null) {
+                            Spacer(Modifier.height(8.dp))
+                            AuroraOutlinedButton(
+                                text = "Ver saldo de este cliente",
+                                icon = Icons.Default.ReceiptLong,
+                                onClick = { onOpenClientProfile(delivery.clientId) },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
                         }
                     }
                 }

@@ -13,6 +13,7 @@ import com.example.MainActivity
 import com.example.R
 import com.example.data.local.HyhDatabase
 import com.example.data.local.entity.ReminderEntity
+import com.example.BuildConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -100,7 +101,7 @@ object ReminderScheduler {
             val details = listOf(reminder.boxesNote, reminder.note)
                 .filter { it.isNotBlank() }
                 .joinToString(" • ")
-                .ifBlank { "Recordatorio de entrega especial H y H HUEVOS" }
+                .ifBlank { "Recordatorio de entrega especial ${BuildConfig.BRAND_APP_NAME}" }
             putExtra(EXTRA_MESSAGE, details)
         }
         val pi = PendingIntent.getBroadcast(
@@ -170,7 +171,7 @@ object ReminderScheduler {
 class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val id = intent.getLongExtra("extra_reminder_id", 1L)
-        val title = intent.getStringExtra("extra_client_name") ?: "Recordatorio H y H HUEVOS"
+        val title = intent.getStringExtra("extra_client_name") ?: "Recordatorio ${BuildConfig.BRAND_APP_NAME}"
         val message = intent.getStringExtra("extra_message") ?: "Tienes una entrega programada."
         ReminderScheduler.showNotificationNow(context, id, title, message)
     }

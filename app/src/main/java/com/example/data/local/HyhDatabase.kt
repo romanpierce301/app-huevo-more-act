@@ -33,7 +33,7 @@ import com.example.data.local.entity.SugarPurchaseEntity
         SugarPurchaseEntity::class,
         SugarInventoryEntity::class,
     ],
-    version = 4,
+    version = 7,
     exportSchema = false,
 )
 abstract class HyhDatabase : RoomDatabase() {
@@ -113,13 +113,34 @@ abstract class HyhDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE deliveries ADD COLUMN salesChannel TEXT NOT NULL DEFAULT 'PUBLIC'")
+                db.execSQL("ALTER TABLE abonos ADD COLUMN salesChannel TEXT NOT NULL DEFAULT 'PUBLIC'")
+                db.execSQL("ALTER TABLE business_settings ADD COLUMN nextCremeriaFolioSequence INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("UPDATE deliveries SET clientId = -1, clientName = 'Cremería del Patrón' WHERE salesChannel = 'CREMERIA'")
+                db.execSQL("UPDATE abonos SET clientId = -1 WHERE salesChannel = 'CREMERIA'")
+            }
+        }
+
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE business_settings ADD COLUMN printerTransport TEXT NOT NULL DEFAULT 'CLASSIC'")
+            }
+        }
+
         fun getInstance(context: Context): HyhDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     HyhDatabase::class.java,
                     "hyh_huevos_local.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { INSTANCE = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7).build().also { INSTANCE = it }
             }
         }
     }

@@ -18,7 +18,9 @@ import com.example.data.local.entity.DailyClosingEntity
 import com.example.data.local.entity.DeliveryEntity
 import com.example.data.local.entity.EggPurchaseEntity
 import com.example.data.local.entity.InventoryBrandEntity
+import com.example.BuildConfig
 import com.example.data.local.entity.ReminderEntity
+import com.example.data.local.entity.SalesChannel
 import com.example.data.local.entity.SugarInventoryEntity
 import com.example.data.local.entity.SugarPurchaseEntity
 import com.example.domain.CalculationEngine
@@ -75,12 +77,18 @@ class HyhRepository(
 
     fun observeDeliveries(): Flow<List<DeliveryEntity>> = dao.observeDeliveries()
 
+    fun observeCremeriaDeliveries(): Flow<List<DeliveryEntity>> = dao.observeCremeriaDeliveries()
+
     fun observeDeliveryById(id: Long): Flow<DeliveryEntity?> = dao.observeDeliveryById(id)
+
+    fun observeCremeriaDeliveryById(id: Long): Flow<DeliveryEntity?> = dao.observeCremeriaDeliveryById(id)
 
     fun observeDeliveriesForClient(clientId: Long): Flow<List<DeliveryEntity>> =
         dao.observeDeliveriesForClient(clientId)
 
     fun observeActiveAbonos(): Flow<List<AbonoEntity>> = dao.observeActiveAbonos()
+
+    fun observeActiveCremeriaAbonos(): Flow<List<AbonoEntity>> = dao.observeActiveCremeriaAbonos()
 
     fun observeAbonosForClient(clientId: Long): Flow<List<AbonoEntity>> =
         dao.observeAbonosForClient(clientId)
@@ -123,13 +131,13 @@ class HyhRepository(
             current.copy(
                 phone = phone.trim(),
                 address = address.trim(),
-                slogan = slogan.trim().ifBlank { "LOS MAS FRESCOS DE LA ZONA" },
+                slogan = slogan.trim().ifBlank { BuildConfig.BRAND_SLOGAN },
                 globalPricePerKg = globalPricePerKg,
             ),
         )
     }
 
-    suspend fun updatePrinterSettings(type: String, name: String, address: String) {
+    suspend fun updatePrinterSettings(type: String, name: String, address: String, transport: String = "CLASSIC") {
         val current = ensureDefaultSettings()
         val safeType = if (type == "USB") "USB" else "BLUETOOTH"
         dao.upsertSettings(
@@ -137,6 +145,7 @@ class HyhRepository(
                 printerType = safeType,
                 printerName = name.trim(),
                 printerAddress = address.trim(),
+                printerTransport = if (transport == "BLE") "BLE" else "CLASSIC",
             ),
         )
     }
@@ -342,7 +351,9 @@ class HyhRepository(
         sugarSackWeightKg: Double = 0.0,
         sugarPricePerSackMxn: Double = 0.0,
         sugarSubtotalMxn: Double = 0.0,
+        salesChannel: String = SalesChannel.PUBLIC,
     ): Long = withContext(Dispatchers.IO) {
+        require(salesChannel in setOf(SalesChannel.PUBLIC, SalesChannel.CREMERIA)) { "Canal de venta inválido" }
         val hasEggs = boxes > 0.0 || weighedItems.isNotEmpty()
         val hasSugar = sugarSacks > 0.0
         require(hasEggs || hasSugar) { "Agrega al menos una caja de huevo o bultos de azúcar" }
@@ -388,12 +399,26 @@ class HyhRepository(
         try {
             database.withTransaction {
                 val settings = ensureDefaultSettings()
-                val client = dao.getClientById(clientId)
-                    ?: throw IllegalStateException("Cliente seleccionado no existe")
+                val client = if (salesChannel == SalesChannel.CREMERIA) {
+                    require(clientId == SalesChannel.CREMERIA_CLIENT_ID) { "La venta debe registrarse para Cremería del Patrón" }
+                    ClientEntity(
+                        id = SalesChannel.CREMERIA_CLIENT_ID,
+                        name = SalesChannel.CREMERIA_CLIENT_NAME,
+                        address = "",
+                    )
+                } else {
+                    dao.getClientById(clientId)
+                        ?: throw IllegalStateException("Cliente seleccionado no existe")
+                }
 
-                val seq = settings.nextFolioSequence.coerceAtLeast(1)
+                val seq = if (salesChannel == SalesChannel.CREMERIA) {
+                    settings.nextCremeriaFolioSequence.coerceAtLeast(1)
+                } else {
+                    settings.nextFolioSequence.coerceAtLeast(1)
+                }
                 val year = SimpleDateFormat("yyyy", Locale.US).format(Date())
-                val folio = String.format(Locale.US, "HYH-%s-%04d", year, seq)
+                val folioPrefix = if (salesChannel == SalesChannel.CREMERIA) "CREM" else BuildConfig.BRAND_FILE_PREFIX
+                val folio = String.format(Locale.US, "$folioPrefix-%s-%04d", year, seq)
 
                 val signaturePath = if (paymentMethod == PaymentMethod.CREDITO && signatureBitmap != null) {
                     val sigDir = File(context.filesDir, "signatures").apply { mkdirs() }
@@ -407,7 +432,11 @@ class HyhRepository(
                     null
                 }
 
-                val previousDebt = dao.getActiveDebtForClient(client.id)
+                val previousDebt = if (salesChannel == SalesChannel.CREMERIA) {
+                    dao.getActiveCremeriaDebtForClient(client.id)
+                } else {
+                    dao.getActiveDebtForClient(client.id)
+                }
                 val prevDebtBd = BigDecimal.valueOf(previousDebt).setScale(2, RoundingMode.HALF_UP)
                 val totalAccumBd = prevDebtBd.add(pendingBd).setScale(2, RoundingMode.HALF_UP)
 
@@ -438,6 +467,7 @@ class HyhRepository(
                         sugarSackWeightKg = if (hasSugar) sugarSackWeightKg else 0.0,
                         sugarPricePerSackMxn = if (hasSugar) sugarPricePerSackMxn else 0.0,
                         sugarSubtotalMxn = if (hasSugar) sugarSubtotalMxn else 0.0,
+                        salesChannel = salesChannel,
                     ),
                 )
 
@@ -515,12 +545,14 @@ class HyhRepository(
                 }
 
                 // Consumir siguiente folio y mantener registrado el último precio del huevo por kg
-                val shouldUpdateGlobalPrice = hasEggs && (client.specialPricePerKg == null || settings.globalPricePerKg <= 0.0)
+                val shouldUpdateGlobalPrice = salesChannel == SalesChannel.PUBLIC && hasEggs &&
+                    (client.specialPricePerKg == null || settings.globalPricePerKg <= 0.0)
                 val persistedEggPrice = weighedItems.lastOrNull { it.pricePerKg > BigDecimal.ZERO }
                     ?.pricePerKg?.toDouble() ?: pricePerKg
                 dao.upsertSettings(
                     settings.copy(
-                        nextFolioSequence = seq + 1,
+                        nextFolioSequence = if (salesChannel == SalesChannel.PUBLIC) seq + 1 else settings.nextFolioSequence,
+                        nextCremeriaFolioSequence = if (salesChannel == SalesChannel.CREMERIA) seq + 1 else settings.nextCremeriaFolioSequence,
                         globalPricePerKg = if (shouldUpdateGlobalPrice && persistedEggPrice > 0.0) persistedEggPrice else settings.globalPricePerKg,
                     ),
                 )
@@ -537,10 +569,15 @@ class HyhRepository(
         deliveryId: Long,
         amountMxn: Double,
         note: String,
+        salesChannel: String = SalesChannel.PUBLIC,
     ) {
         require(amountMxn.isFinite() && amountMxn > 0.0) { "El abono debe ser mayor a cero" }
         database.withTransaction {
-            val delivery = dao.getDeliveryById(deliveryId)
+            val delivery = if (salesChannel == SalesChannel.CREMERIA) {
+                dao.getCremeriaDeliveryById(deliveryId)
+            } else {
+                dao.getDeliveryById(deliveryId)
+            }
                 ?: throw IllegalStateException("Entrega no encontrada")
             if (delivery.status == "CANCELADA") {
                 throw IllegalStateException("No se puede abonar a una entrega cancelada")
@@ -570,14 +607,19 @@ class HyhRepository(
                     dateMillis = System.currentTimeMillis(),
                     note = note.trim(),
                     isCancelled = false,
+                    salesChannel = salesChannel,
                 ),
             )
         }
     }
 
-    suspend fun cancelDelivery(deliveryId: Long, reason: String) {
+    suspend fun cancelDelivery(deliveryId: Long, reason: String, salesChannel: String = SalesChannel.PUBLIC) {
         database.withTransaction {
-            val delivery = dao.getDeliveryById(deliveryId)
+            val delivery = if (salesChannel == SalesChannel.CREMERIA) {
+                dao.getCremeriaDeliveryById(deliveryId)
+            } else {
+                dao.getDeliveryById(deliveryId)
+            }
                 ?: throw IllegalStateException("Entrega no encontrada")
             if (delivery.status == "CANCELADA") {
                 throw IllegalStateException("Esta entrega ya fue cancelada")
@@ -590,7 +632,11 @@ class HyhRepository(
                     cancellationReason = reason.trim().ifBlank { "Cancelación operativa" },
                 ),
             )
-            dao.markAbonosCancelledForDelivery(delivery.id)
+            if (salesChannel == SalesChannel.CREMERIA) {
+                dao.markCremeriaAbonosCancelledForDelivery(delivery.id)
+            } else {
+                dao.markAbonosCancelledForDelivery(delivery.id)
+            }
 
             val weighedItems = CalculationEngine.parseWeighedItemsJson(delivery.itemsSnapshotJson)
             val itemBrandBoxes = weighedItems
@@ -699,11 +745,11 @@ class HyhRepository(
             val dateKey = dayKeyFmt.format(Date(targetDateMillis))
             val (startMs, endMs) = dayRangeMillis(targetDateMillis)
 
-            val allDeliveries = dao.getAllDeliveriesOnce()
+            val allDeliveries = dao.getPublicDeliveriesOnce()
             val dayDeliveries = allDeliveries.filter { it.dateMillis in startMs..endMs }
             val activeDayDeliveries = dayDeliveries.filter { it.status == "ACTIVA" }
 
-            val allAbonos = dao.getAllAbonosOnce()
+            val allAbonos = dao.getAllPublicAbonosOnce()
             val dayAbonos = allAbonos.filter { !it.isCancelled && it.dateMillis in startMs..endMs }
 
             var totalBoxes = BigDecimal.ZERO
@@ -832,7 +878,7 @@ class HyhRepository(
         val settings = ensureDefaultSettings()
         val dir = File(context.filesDir, "backups").apply { mkdirs() }
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val jsonFile = File(dir, "Respaldo_HYH_$stamp.json")
+        val jsonFile = File(dir, "Respaldo_${BuildConfig.BRAND_FILE_PREFIX}_$stamp.json")
         val jsonObj = JsonExporter.buildFullDatabaseJson(
             settings = settings,
             clients = dao.getAllClientsOnce(),
@@ -947,22 +993,24 @@ class HyhRepository(
     ): String {
         val root = JSONObject(jsonString)
         if (!root.has("clients") || !root.has("deliveries")) {
-            throw IllegalArgumentException("El archivo JSON no corresponde a un respaldo de H y H HUEVOS")
+            throw IllegalArgumentException("El archivo JSON no corresponde a un respaldo de ${BuildConfig.BRAND_APP_NAME}")
         }
 
         val sObj = root.optJSONObject("settings")
         val settings = BusinessSettingsEntity(
             id = 1,
-            businessName = "H y H HUEVOS",
-            slogan = sObj?.optString("slogan", "LOS MAS FRESCOS DE LA ZONA")
-                ?.ifBlank { "LOS MAS FRESCOS DE LA ZONA" } ?: "LOS MAS FRESCOS DE LA ZONA",
+            businessName = BuildConfig.BRAND_APP_NAME,
+            slogan = sObj?.optString("slogan", BuildConfig.BRAND_SLOGAN)
+                ?.ifBlank { BuildConfig.BRAND_SLOGAN } ?: BuildConfig.BRAND_SLOGAN,
             phone = sObj?.optString("phone", "") ?: "",
             address = sObj?.optString("address", "") ?: "",
             globalPricePerKg = sObj?.optDouble("globalPricePerKg", 0.0)?.takeIf { it.isFinite() && it >= 0 } ?: 0.0,
             printerType = sObj?.optString("printerType", "BLUETOOTH") ?: "BLUETOOTH",
             printerName = sObj?.optString("printerName", "") ?: "",
             printerAddress = sObj?.optString("printerAddress", "") ?: "",
+            printerTransport = if (sObj?.optString("printerTransport", "CLASSIC") == "BLE") "BLE" else "CLASSIC",
             nextFolioSequence = sObj?.optInt("nextFolioSequence", 1)?.coerceAtLeast(1) ?: 1,
+            nextCremeriaFolioSequence = sObj?.optInt("nextCremeriaFolioSequence", 1)?.coerceAtLeast(1) ?: 1,
             nextClosingSequence = sObj?.optInt("nextClosingSequence", 1)?.coerceAtLeast(1) ?: 1,
             creditTermDays = sObj?.optInt("creditTermDays", 7)?.coerceIn(0, 3650) ?: 7,
             creditMoratoriumInterestPercent = sObj?.optDouble("creditMoratoriumInterestPercent", 0.0)
@@ -1038,6 +1086,7 @@ class HyhRepository(
                 sugarSackWeightKg = o.optDouble("sugarSackWeightKg", 0.0).takeIf { it.isFinite() && it >= 0.0 } ?: 0.0,
                 sugarPricePerSackMxn = o.optDouble("sugarPricePerSackMxn", 0.0).takeIf { it.isFinite() && it >= 0.0 } ?: 0.0,
                 sugarSubtotalMxn = o.optDouble("sugarSubtotalMxn", 0.0).takeIf { it.isFinite() && it >= 0.0 } ?: 0.0,
+                salesChannel = o.optString("salesChannel", SalesChannel.PUBLIC),
             )
         }
         val abonos = parseJsonArray(root.optJSONArray("abonos")) { o ->
@@ -1050,6 +1099,7 @@ class HyhRepository(
                 dateMillis = o.getLong("dateMillis"),
                 note = o.optString("note", ""),
                 isCancelled = o.optBoolean("isCancelled", false),
+                salesChannel = o.optString("salesChannel", SalesChannel.PUBLIC),
             )
         }
         val reminders = parseJsonArray(root.optJSONArray("reminders")) { o ->
@@ -1143,7 +1193,7 @@ class HyhRepository(
     suspend fun saveFileToPublicDownloads(
         sourceFile: File,
         mimeType: String,
-        subFolder: String = "HYH_Huevos",
+        subFolder: String = BuildConfig.BRAND_TICKETS_FOLDER,
     ): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             if (!sourceFile.exists()) throw IllegalStateException("Archivo no encontrado")

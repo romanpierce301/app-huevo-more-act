@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -44,6 +46,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -57,6 +60,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.BuildConfig
 import com.example.data.local.entity.BackupRecordEntity
 import com.example.data.local.entity.BusinessSettingsEntity
 import com.example.data.local.entity.ClientEntity
@@ -93,6 +97,7 @@ fun RespaldosLocalesScreen(
     onSaveBackupToDownloads: (BackupRecordEntity) -> Unit,
     onRestoreFromUri: (Uri) -> Unit,
     onRestoreFromRecord: (BackupRecordEntity) -> Unit,
+    backupFolderName: String = BuildConfig.BRAND_BACKUPS_FOLDER,
 ) {
     val openDocLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -182,7 +187,7 @@ fun RespaldosLocalesScreen(
                     }
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        text = "1. Genera un respaldo ZIP o JSON (se guarda automáticamente en Descargas/HYH_Backups).\n2. Conecta tu teléfono a la computadora por USB en modo 'Transferencia de archivos' y copia la carpeta HYH_Backups.",
+                        text = "1. Genera un respaldo ZIP o JSON (se guarda automáticamente en Descargas/$backupFolderName).\n2. Conecta tu teléfono a la computadora por USB en modo 'Transferencia de archivos' y copia la carpeta $backupFolderName.",
                         style = MaterialTheme.typography.bodySmall,
                         color = OnSurfaceVariant,
                     )
@@ -262,6 +267,10 @@ fun ConfiguracionScreen(
     onSaveBusinessConfig: (phone: String, address: String, slogan: String, globalPriceText: String) -> Unit,
     onUpdateClientSpecialPrice: (clientId: Long, specialPriceText: String) -> Unit,
     onRefreshPrinters: () -> Unit,
+    onScanPrinters: () -> Unit,
+    onStopPrinterScan: () -> Unit,
+    onPrinterPermissionDenied: () -> Unit,
+    isScanningPrinters: Boolean,
     onSelectPrinterType: (String) -> Unit,
     onSelectPrinter: (PairedPrinterDevice) -> Unit,
     onTestPrinter: () -> Unit,
@@ -277,12 +286,28 @@ fun ConfiguracionScreen(
 
     val btPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
-    ) { _ ->
-        onRefreshPrinters()
+    ) { result ->
+        if (result.isNotEmpty() && result.values.all { it }) onScanPrinters()
+        else onPrinterPermissionDenied()
+    }
+
+    fun requestScanWithPermissions() {
+        val required = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN)
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        val missing = required.filter {
+            ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) onScanPrinters() else btPermissionLauncher.launch(missing.toTypedArray())
     }
 
     LaunchedEffect(Unit) {
         onRefreshPrinters()
+    }
+    DisposableEffect(Unit) {
+        onDispose { onStopPrinterScan() }
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -415,9 +440,15 @@ fun ConfiguracionScreen(
             item {
                 AuroraCard {
                     Text(
-                        text = "Impresora Térmica 60 mm",
+                        text = "Conectar impresora térmica",
                         style = MaterialTheme.typography.titleMedium,
                         color = OnSurface,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = "Enciende la impresora y pulsa Buscar. Si aparece como Bluetooth, tócala para vincularla con Android. Si aparece como Bluetooth LE, tócala para seleccionarla. Después pulsa Prueba 60 mm.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = OnSurfaceVariant,
                     )
                     Spacer(Modifier.height(10.dp))
                     Row(
@@ -456,7 +487,7 @@ fun ConfiguracionScreen(
                     Spacer(Modifier.height(10.dp))
                     Text(
                         text = if (settings.printerName.isNotBlank()) {
-                            "Seleccionada: ${settings.printerName} (${settings.printerType})"
+                            "Seleccionada: ${settings.printerName} (${if (settings.printerTransport == "BLE") "Bluetooth LE" else settings.printerType})"
                         } else {
                             "Ninguna impresora seleccionada"
                         },
@@ -470,26 +501,11 @@ fun ConfiguracionScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         AuroraOutlinedButton(
-                            text = "Buscar Impresoras",
+                            text = if (isScanningPrinters) "Buscando…" else "Buscar impresora",
                             icon = Icons.Default.Refresh,
-                            onClick = {
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                    val needed = arrayOf(
-                                        Manifest.permission.BLUETOOTH_CONNECT,
-                                        Manifest.permission.BLUETOOTH_SCAN,
-                                    ).filter {
-                                        ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
-                                    }
-                                    if (needed.isNotEmpty()) {
-                                        btPermissionLauncher.launch(needed.toTypedArray())
-                                    } else {
-                                        onRefreshPrinters()
-                                    }
-                                } else {
-                                    onRefreshPrinters()
-                                }
-                            },
+                            onClick = ::requestScanWithPermissions,
                             modifier = Modifier.weight(1f),
+                            enabled = !isScanningPrinters,
                             testTag = "scan_printers_button",
                         )
                         AuroraOutlinedButton(
@@ -498,8 +514,18 @@ fun ConfiguracionScreen(
                             onClick = onTestPrinter,
                             accentColor = Secondary,
                             modifier = Modifier.weight(0.9f),
+                            enabled = settings.printerAddress.isNotBlank(),
                             testTag = "test_printer_button",
                         )
+                    }
+
+                    if (isScanningPrinters) {
+                        Spacer(Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Buscando dispositivos cercanos…", style = MaterialTheme.typography.bodySmall, color = OnSurfaceVariant)
+                        }
                     }
 
                     if (printers.isNotEmpty()) {
@@ -524,10 +550,16 @@ fun ConfiguracionScreen(
                                 ) {
                                     Column {
                                         Text(dev.name, style = MaterialTheme.typography.titleSmall, color = OnSurface)
-                                        Text("${dev.type} • ${dev.address}", style = MaterialTheme.typography.bodySmall, color = OnSurfaceVariant)
+                                        Text("${if (dev.isLowEnergy) "Bluetooth LE" else dev.type} • ${dev.address}", style = MaterialTheme.typography.bodySmall, color = OnSurfaceVariant)
                                     }
                                     if (isSelected) {
                                         AuroraStatusBadge(text = "Activa", tint = PrimaryGlow)
+                                    } else if (dev.type == "USB") {
+                                        AuroraStatusBadge(text = "Conectada", tint = PrimaryGlow)
+                                    } else if (dev.isPaired) {
+                                        AuroraStatusBadge(text = "Vinculada", tint = Secondary)
+                                    } else {
+                                        AuroraStatusBadge(text = if (dev.isLowEnergy) "Toca para seleccionar" else "Toca para vincular", tint = Secondary)
                                     }
                                 }
                             }

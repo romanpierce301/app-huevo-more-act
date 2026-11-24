@@ -71,6 +71,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.BuildConfig
 import com.example.ui.theme.BackgroundDark
 import com.example.ui.theme.Error
 import com.example.ui.theme.ErrorContainer
@@ -163,7 +164,7 @@ fun AuroraTopBar(
 
             Image(
                 painter = painterResource(R.drawable.img_welcome_hero),
-                contentDescription = "Logotipo H y H HUEVOS",
+                contentDescription = "Logotipo ${BuildConfig.BRAND_APP_NAME}",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
                     .size(40.dp)

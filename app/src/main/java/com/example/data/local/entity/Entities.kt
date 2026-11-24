@@ -1,7 +1,16 @@
 package com.example.data.local.entity
 
+import com.example.BuildConfig
+
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+
+object SalesChannel {
+    const val PUBLIC = "PUBLIC"
+    const val CREMERIA = "CREMERIA"
+    const val CREMERIA_CLIENT_ID = -1L
+    const val CREMERIA_CLIENT_NAME = "Cremería del Patrón"
+}
 
 @Entity(tableName = "clients")
 data class ClientEntity(
@@ -91,6 +100,7 @@ data class DeliveryEntity(
     val sugarSackWeightKg: Double = 0.0,
     val sugarPricePerSackMxn: Double = 0.0,
     val sugarSubtotalMxn: Double = 0.0,
+    val salesChannel: String = "PUBLIC",
 )
 
 @Entity(tableName = "abonos")
@@ -103,6 +113,7 @@ data class AbonoEntity(
     val dateMillis: Long = System.currentTimeMillis(),
     val note: String = "",
     val isCancelled: Boolean = false,
+    val salesChannel: String = "PUBLIC",
 )
 
 @Entity(tableName = "reminders")
@@ -152,14 +163,15 @@ data class BackupRecordEntity(
 @Entity(tableName = "business_settings")
 data class BusinessSettingsEntity(
     @PrimaryKey val id: Int = 1,
-    val businessName: String = "H y H HUEVOS",
-    val slogan: String = "LOS MAS FRESCOS DE LA ZONA",
+    val businessName: String = BuildConfig.BRAND_APP_NAME,
+    val slogan: String = BuildConfig.BRAND_SLOGAN,
     val phone: String = "",
     val address: String = "",
     val globalPricePerKg: Double = 0.0,
     val printerType: String = "BLUETOOTH",
     val printerName: String = "",
     val printerAddress: String = "",
+    val printerTransport: String = "CLASSIC",
     val nextFolioSequence: Int = 1,
     val nextClosingSequence: Int = 1,
     val creditTermDays: Int = 7,
@@ -167,4 +179,5 @@ data class BusinessSettingsEntity(
     val creditPaymentPlace: String = "",
     val creditLegendExtra: String = "",
     val creditLegendClosing: String = "Válido con firma digital.",
+    val nextCremeriaFolioSequence: Int = 1,
 )

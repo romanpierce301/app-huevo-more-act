@@ -1,8 +1,11 @@
 package com.example.ui.theme
 
+import android.graphics.Color as AndroidColor
 import androidx.compose.ui.graphics.Color
 
-// M3 Aurora UI Dark Palette - H y H HUEVOS (Exclusively Dark Mode)
+import com.example.BuildConfig
+
+// M3 Aurora UI Dark Palette (Exclusively Dark Mode)
 val BackgroundDark = Color(0xFF0A141E)
 val SurfaceDark = Color(0xFF0A141E)
 val SurfaceDim = Color(0xFF070E16)
@@ -18,12 +21,12 @@ val OnSurfaceVariant = Color(0xFFBFC9C1)
 val Outline = Color(0xFF89938B)
 val OutlineVariant = Color(0xFF404943)
 
-val Primary = Color(0xFF91D5AF)
+val Primary = Color(AndroidColor.parseColor(BuildConfig.BRAND_PRIMARY))
 val OnPrimary = Color(0xFF003823)
-val PrimaryContainer = Color(0xFF76B995)
+val PrimaryContainer = Color(AndroidColor.parseColor(BuildConfig.BRAND_PRIMARY_CONTAINER))
 val OnPrimaryContainer = Color(0xFF00492F)
 val PrimaryFixed = Color(0xFFACF2CA)
-val PrimaryGlow = Color(0xFF34D399)
+val PrimaryGlow = Color(AndroidColor.parseColor(BuildConfig.BRAND_PRIMARY_GLOW))
 val Primary3DLip = Color(0xFF1B5E3C)
 
 val Secondary = Color(0xFFECC068)

@@ -40,10 +40,12 @@ import com.example.R
 import com.example.data.local.entity.BusinessSettingsEntity
 import com.example.data.local.entity.ClientEntity
 import com.example.data.local.entity.DeliveryEntity
+import com.example.data.local.entity.SalesChannel
 import com.example.domain.CalculationEngine
 import com.example.domain.DeliveryModality
 import com.example.domain.PaymentMethod
 import com.example.ui.theme.SpaceMonoFontFamily
+import com.example.BuildConfig
 import com.example.ui.theme.ThermalAlertRed
 import com.example.ui.theme.ThermalInk
 import com.example.ui.theme.ThermalInkDark
@@ -134,10 +136,10 @@ fun ThermalTicket60mmView(
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // Logo térmico 1-bit enviado por el usuario (incluye H&H Huevos y LOS MÁS FRESCOS DE LA ZONA)
+            // Logotipo térmico correspondiente a la variante instalada.
             Image(
                 painter = painterResource(R.drawable.img_ticket_logo),
-                contentDescription = "Logotipo térmico H y H HUEVOS",
+                contentDescription = "Logotipo térmico ${BuildConfig.BRAND_APP_NAME}",
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -198,6 +200,16 @@ fun ThermalTicket60mmView(
                 color = ThermalInkDark,
                 textAlign = TextAlign.Center,
             )
+            if (delivery.salesChannel == SalesChannel.CREMERIA) {
+                Text(
+                    text = "VENTA PARA CREMERÍA DEL PATRÓN",
+                    fontFamily = SpaceMonoFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 9.sp,
+                    color = ThermalInkDark,
+                    textAlign = TextAlign.Center,
+                )
+            }
             Text(
                 text = delivery.folio,
                 fontFamily = SpaceMonoFontFamily,

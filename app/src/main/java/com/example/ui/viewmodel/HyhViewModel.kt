@@ -21,6 +21,7 @@ import com.example.data.local.entity.InventoryBrandEntity
 import com.example.data.local.entity.ReminderEntity
 import com.example.data.local.entity.SugarInventoryEntity
 import com.example.data.local.entity.SugarPurchaseEntity
+import com.example.data.local.entity.SalesChannel
 import com.example.domain.CalculationEngine
 import com.example.domain.DeliveryCalculationResult
 import com.example.domain.DeliveryModality
@@ -33,6 +34,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -100,6 +102,9 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
     val deliveries: StateFlow<List<DeliveryEntity>> = repository.observeDeliveries()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val cremeriaDeliveries: StateFlow<List<DeliveryEntity>> = repository.observeCremeriaDeliveries()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val clientsWithDebt: StateFlow<List<ClientWithDebt>> = combine(rawClients, deliveries) { clients, allDeliveries ->
         val grouped = allDeliveries.groupBy { it.clientId }
         clients.map { client ->
@@ -117,6 +122,27 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    private val cremeriaAccount = ClientEntity(
+        id = SalesChannel.CREMERIA_CLIENT_ID,
+        name = SalesChannel.CREMERIA_CLIENT_NAME,
+        address = "",
+    )
+    val cremeriaClientsWithDebt: StateFlow<List<ClientWithDebt>> = cremeriaDeliveries
+        .map { allDeliveries ->
+            val accountDeliveries = allDeliveries.filter { it.clientId == SalesChannel.CREMERIA_CLIENT_ID }
+            val activeDebt = accountDeliveries
+                .filter { it.status == "ACTIVA" }
+                .fold(BigDecimal.ZERO) { acc, d -> acc.add(BigDecimal.valueOf(d.pendingBalanceMxn)) }
+                .setScale(2, RoundingMode.HALF_UP)
+                .toDouble()
+            listOf(ClientWithDebt(cremeriaAccount, activeDebt, accountDeliveries.size))
+        }
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            listOf(ClientWithDebt(cremeriaAccount, 0.0, 0)),
+        )
+
     val purchases: StateFlow<List<EggPurchaseEntity>> = repository.observePurchases()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -130,6 +156,9 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SugarInventoryEntity())
 
     val activeAbonos: StateFlow<List<AbonoEntity>> = repository.observeActiveAbonos()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val activeCremeriaAbonos: StateFlow<List<AbonoEntity>> = repository.observeActiveCremeriaAbonos()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val reminders: StateFlow<List<ReminderEntity>> = repository.observeReminders()
@@ -147,6 +176,11 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
     private val _deliveryDraft = MutableStateFlow(DeliveryDraftState())
     val deliveryDraft: StateFlow<DeliveryDraftState> = _deliveryDraft.asStateFlow()
 
+    private val _cremeriaDraft = MutableStateFlow(DeliveryDraftState())
+    val cremeriaDraft: StateFlow<DeliveryDraftState> = _cremeriaDraft.asStateFlow()
+
+    private fun draftFlow(isCremeria: Boolean) = if (isCremeria) _cremeriaDraft else _deliveryDraft
+
     private val _feedbackMessage = MutableStateFlow<String?>(null)
     val feedbackMessage: StateFlow<String?> = _feedbackMessage.asStateFlow()
 
@@ -155,6 +189,9 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _pairedPrinters = MutableStateFlow<List<PairedPrinterDevice>>(emptyList())
     val pairedPrinters: StateFlow<List<PairedPrinterDevice>> = _pairedPrinters.asStateFlow()
+
+    private val _isScanningPrinters = MutableStateFlow(false)
+    val isScanningPrinters: StateFlow<Boolean> = _isScanningPrinters.asStateFlow()
 
     private val _dueTodayBannerReminders = MutableStateFlow<List<ReminderEntity>>(emptyList())
     val dueTodayBannerReminders: StateFlow<List<ReminderEntity>> = _dueTodayBannerReminders.asStateFlow()
@@ -324,22 +361,24 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // --- Nueva entrega y flujo de pago ---
-    fun startDeliveryForClient(clientId: Long?) {
-        val selectedClient = clientId?.let { id -> rawClients.value.firstOrNull { it.id == id } }
+    fun startDeliveryForClient(clientId: Long?, isCremeria: Boolean = false) {
+        val resolvedClientId = if (isCremeria) SalesChannel.CREMERIA_CLIENT_ID else clientId
+        val selectedClient = resolvedClientId?.let { id -> rawClients.value.firstOrNull { it.id == id } }
         val basePrice = selectedClient?.specialPricePerKg ?: settings.value.globalPricePerKg
-        _deliveryDraft.value = DeliveryDraftState(
-            clientId = clientId,
+        draftFlow(isCremeria).value = DeliveryDraftState(
+            clientId = resolvedClientId,
             pricePerKgInput = CalculationEngine.formatPlainDecimal(basePrice),
         )
     }
 
-    fun clearDeliveryDraft() {
-        _deliveryDraft.value = DeliveryDraftState()
+    fun clearDeliveryDraft(isCremeria: Boolean = false) {
+        draftFlow(isCremeria).value = DeliveryDraftState()
     }
 
-    fun selectDraftClient(clientId: Long) {
+    fun selectDraftClient(clientId: Long, isCremeria: Boolean = false) {
+        if (isCremeria) return
         val selectedClient = rawClients.value.firstOrNull { it.id == clientId }
-        _deliveryDraft.update { current ->
+        draftFlow(isCremeria).update { current ->
             val previousClient = current.clientId?.let { id ->
                 rawClients.value.firstOrNull { it.id == id }
             }
@@ -357,24 +396,25 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun updateDraftBrand(brand: String) {
-        _deliveryDraft.update { it.copy(brand = brand) }
+    fun updateDraftBrand(brand: String, isCremeria: Boolean = false) {
+        draftFlow(isCremeria).update { it.copy(brand = brand) }
     }
 
-    fun updateDraftModality(modality: DeliveryModality) {
-        _deliveryDraft.update { it.copy(modality = modality) }
+    fun updateDraftModality(modality: DeliveryModality, isCremeria: Boolean = false) {
+        draftFlow(isCremeria).update { it.copy(modality = modality) }
     }
 
-    fun updateDraftWeight(weight: String) {
-        _deliveryDraft.update { it.copy(weightInputKg = weight) }
+    fun updateDraftWeight(weight: String, isCremeria: Boolean = false) {
+        draftFlow(isCremeria).update { it.copy(weightInputKg = weight) }
     }
 
-    fun updateDraftPricePerKg(price: String) {
-        _deliveryDraft.update { it.copy(pricePerKgInput = price) }
+    fun updateDraftPricePerKg(price: String, isCremeria: Boolean = false) {
+        draftFlow(isCremeria).update { it.copy(pricePerKgInput = price) }
     }
 
-    fun addWeighedBoxItem() {
-        val current = _deliveryDraft.value
+    fun addWeighedBoxItem(isCremeria: Boolean = false) {
+        val flow = draftFlow(isCremeria)
+        val current = flow.value
         val priceBd = CalculationEngine.parsePositiveDecimal(current.pricePerKgInput)
         if (priceBd <= BigDecimal.ZERO) {
             _feedbackMessage.value = "Ingresa el precio por kilogramo antes de agregar"
@@ -389,7 +429,7 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
             brand = itemBrand,
             pricePerKg = priceBd,
         ).onSuccess { item ->
-            _deliveryDraft.update {
+            flow.update {
                 it.copy(
                     weighedItems = it.weighedItems + item,
                     weightInputKg = "",
@@ -401,30 +441,30 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun removeWeighedBoxItem(itemId: Long) {
-        _deliveryDraft.update { current ->
+    fun removeWeighedBoxItem(itemId: Long, isCremeria: Boolean = false) {
+        draftFlow(isCremeria).update { current ->
             current.copy(weighedItems = current.weighedItems.filterNot { it.id == itemId })
         }
     }
 
-    fun updateDraftPaymentMethod(method: PaymentMethod) {
-        _deliveryDraft.update { it.copy(paymentMethod = method, initialAbonoInput = if (method == PaymentMethod.CONTADO) "" else it.initialAbonoInput) }
+    fun updateDraftPaymentMethod(method: PaymentMethod, isCremeria: Boolean = false) {
+        draftFlow(isCremeria).update { it.copy(paymentMethod = method, initialAbonoInput = if (method == PaymentMethod.CONTADO) "" else it.initialAbonoInput) }
     }
 
-    fun updateDraftInitialAbono(abono: String) {
-        _deliveryDraft.update { it.copy(initialAbonoInput = abono) }
+    fun updateDraftInitialAbono(abono: String, isCremeria: Boolean = false) {
+        draftFlow(isCremeria).update { it.copy(initialAbonoInput = abono) }
     }
 
-    fun updateDraftSugarSacks(sacks: String) {
-        _deliveryDraft.update { it.copy(sugarSacksInput = sacks) }
+    fun updateDraftSugarSacks(sacks: String, isCremeria: Boolean = false) {
+        draftFlow(isCremeria).update { it.copy(sugarSacksInput = sacks) }
     }
 
-    fun updateDraftSugarWeightPerSack(weight: String) {
-        _deliveryDraft.update { it.copy(sugarWeightPerSackInput = weight) }
+    fun updateDraftSugarWeightPerSack(weight: String, isCremeria: Boolean = false) {
+        draftFlow(isCremeria).update { it.copy(sugarWeightPerSackInput = weight) }
     }
 
-    fun updateDraftSugarPricePerSack(price: String) {
-        _deliveryDraft.update { it.copy(sugarPricePerSackInput = price) }
+    fun updateDraftSugarPricePerSack(price: String, isCremeria: Boolean = false) {
+        draftFlow(isCremeria).update { it.copy(sugarPricePerSackInput = price) }
     }
 
     fun computeDraftCalculation(
@@ -447,12 +487,22 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
 
     fun finalizeDelivery(
         signatureBitmap: Bitmap?,
+        isCremeria: Boolean = false,
         onCompleted: (Long) -> Unit,
     ) {
         viewModelScope.launch {
-            val draft = _deliveryDraft.value
+            val flow = draftFlow(isCremeria)
+            val draft = flow.value
             val clientId = draft.clientId
-            val selectedClient = clientId?.let { repository.getClientOnce(it) }
+            val selectedClient = if (isCremeria) {
+                ClientEntity(
+                    id = SalesChannel.CREMERIA_CLIENT_ID,
+                    name = SalesChannel.CREMERIA_CLIENT_NAME,
+                    address = "",
+                )
+            } else {
+                clientId?.let { repository.getClientOnce(it) }
+            }
             if (selectedClient == null) {
                 _feedbackMessage.value = "Seleccione un cliente antes de continuar"
                 return@launch
@@ -535,13 +585,14 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
                     sugarSackWeightKg = if (sugarSummary.isPresent) sugarSummary.weightPerSackKg.toDouble() else 0.0,
                     sugarPricePerSackMxn = if (sugarSummary.isPresent) sugarSummary.pricePerSackMxn.toDouble() else 0.0,
                     sugarSubtotalMxn = if (sugarSummary.isPresent) sugarSummary.subtotalMxn.toDouble() else 0.0,
+                    salesChannel = if (isCremeria) SalesChannel.CREMERIA else SalesChannel.PUBLIC,
                 )
             }.onSuccess { deliveryId ->
                 soundManager.playPaymentSuccessSound()
-                _deliveryDraft.value = DeliveryDraftState()
+                flow.value = DeliveryDraftState()
                 _overlayState.value = OverlayState.Success(
-                    title = "Entrega registrada",
-                    message = "El ticket y los saldos locales se guardaron correctamente.",
+                    title = if (isCremeria) "Entrega de Cremería registrada" else "Entrega registrada",
+                    message = "El ticket y los saldos locales se guardaron por separado.",
                 )
                 delay(2600)
                 _overlayState.value = OverlayState.None
@@ -558,11 +609,15 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
         amountText: String,
         note: String,
         onDone: () -> Unit = {},
+        isCremeria: Boolean = false,
     ) {
         viewModelScope.launch {
             runCatching {
                 val amount = CalculationEngine.parsePositiveDecimal(amountText).toDouble()
-                repository.recordAbono(clientId, deliveryId, amount, note)
+                repository.recordAbono(
+                    clientId, deliveryId, amount, note,
+                    if (isCremeria) SalesChannel.CREMERIA else SalesChannel.PUBLIC,
+                )
             }.onSuccess {
                 soundManager.playPaymentSuccessSound()
                 _feedbackMessage.value = "Abono registrado correctamente"
@@ -573,10 +628,13 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun cancelDelivery(deliveryId: Long, reason: String) {
+    fun cancelDelivery(deliveryId: Long, reason: String, isCremeria: Boolean = false) {
         viewModelScope.launch {
             runCatching {
-                repository.cancelDelivery(deliveryId, reason)
+                repository.cancelDelivery(
+                    deliveryId, reason,
+                    if (isCremeria) SalesChannel.CREMERIA else SalesChannel.PUBLIC,
+                )
             }.onSuccess {
                 soundManager.playCancellationSound()
                 _overlayState.value = OverlayState.Error(
@@ -675,7 +733,7 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
                     putExtra(Intent.EXTRA_STREAM, uri)
                     putExtra(
                         Intent.EXTRA_TEXT,
-                        "Comprobante H y H HUEVOS • Folio ${delivery.folio}",
+                        "Comprobante ${BuildConfig.BRAND_APP_NAME} • Folio ${delivery.folio}",
                     )
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -707,7 +765,7 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
             runCatching {
                 repository.generateTicketPdf(delivery)
             }.onSuccess { file ->
-                saveOrRequestSaf(file, "application/pdf", file.name, "HYH_Huevos")
+                saveOrRequestSaf(file, "application/pdf", file.name, BuildConfig.BRAND_TICKETS_FOLDER)
             }.onFailure {
                 _feedbackMessage.value = "Error al generar PDF: ${it.message}"
             }
@@ -719,7 +777,7 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
             runCatching {
                 repository.generateTicketJson(delivery)
             }.onSuccess { file ->
-                saveOrRequestSaf(file, "application/json", file.name, "HYH_Huevos")
+                saveOrRequestSaf(file, "application/json", file.name, BuildConfig.BRAND_TICKETS_FOLDER)
             }.onFailure {
                 _feedbackMessage.value = "Error al generar JSON: ${it.message}"
             }
@@ -730,7 +788,7 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val file = File(closing.pdfPath)
             if (file.exists()) {
-                saveOrRequestSaf(file, "application/pdf", file.name, "HYH_Cierres")
+                saveOrRequestSaf(file, "application/pdf", file.name, BuildConfig.BRAND_CLOSINGS_FOLDER)
             } else {
                 _feedbackMessage.value = "Archivo PDF del cierre no encontrado"
             }
@@ -741,7 +799,7 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val file = File(closing.jsonPath)
             if (file.exists()) {
-                saveOrRequestSaf(file, "application/json", file.name, "HYH_Cierres")
+                saveOrRequestSaf(file, "application/json", file.name, BuildConfig.BRAND_CLOSINGS_FOLDER)
             } else {
                 _feedbackMessage.value = "Archivo JSON del cierre no encontrado"
             }
@@ -753,7 +811,7 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
             runCatching {
                 repository.createFullBackupZip()
             }.onSuccess { record ->
-                saveOrRequestSaf(File(record.filePath), "application/zip", record.fileName, "HYH_Backups")
+                saveOrRequestSaf(File(record.filePath), "application/zip", record.fileName, BuildConfig.BRAND_BACKUPS_FOLDER)
             }.onFailure {
                 _feedbackMessage.value = "Error al crear respaldo ZIP: ${it.message}"
             }
@@ -765,7 +823,7 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
             runCatching {
                 repository.exportFullJsonBackup()
             }.onSuccess { record ->
-                saveOrRequestSaf(File(record.filePath), "application/json", record.fileName, "HYH_Backups")
+                saveOrRequestSaf(File(record.filePath), "application/json", record.fileName, BuildConfig.BRAND_BACKUPS_FOLDER)
             }.onFailure {
                 _feedbackMessage.value = "Error al exportar JSON: ${it.message}"
             }
@@ -775,7 +833,7 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
     fun saveExistingBackupToDownloads(record: BackupRecordEntity) {
         viewModelScope.launch {
             val mime = if (record.format.equals("ZIP", ignoreCase = true)) "application/zip" else "application/json"
-            saveOrRequestSaf(File(record.filePath), mime, record.fileName, "HYH_Backups")
+            saveOrRequestSaf(File(record.filePath), mime, record.fileName, BuildConfig.BRAND_BACKUPS_FOLDER)
         }
     }
 
@@ -821,7 +879,7 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
         result.onSuccess { msg ->
             _feedbackMessage.value = msg
         }.onFailure { err ->
-            if (err is UnsupportedOperationException) {
+            if (err is UnsupportedOperationException || mimeType == "application/zip") {
                 _pendingSafSave.value = PendingSafSave(file, mimeType, suggestedName)
             } else {
                 _feedbackMessage.value = err.message ?: "No se pudo guardar el archivo"
@@ -863,20 +921,80 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshPrinters() {
         val bt = printerManager.getPairedBluetoothPrinters()
         val usb = printerManager.getConnectedUsbPrinters()
-        _pairedPrinters.value = bt + usb
+        _pairedPrinters.value = (bt + usb).distinctBy { it.type to it.address }
+    }
+
+    fun scanPrinters() {
+        if (_isScanningPrinters.value) return
+        refreshPrinters()
+        val result = printerManager.startBluetoothDiscovery(
+            onDeviceFound = { found ->
+                _pairedPrinters.update { current ->
+                    val previous = current.firstOrNull { it.type == found.type && it.address == found.address }
+                    val preferred = if (previous?.isLowEnergy == true && !found.isLowEnergy) previous else found
+                    (current.filterNot { it.type == found.type && it.address == found.address } + preferred)
+                        .distinctBy { it.type to it.address }
+                }
+            },
+            onFinished = {
+                _isScanningPrinters.value = false
+                _feedbackMessage.value = if (_pairedPrinters.value.any { it.type == "BLUETOOTH" }) {
+                    "Búsqueda lista. Toca la impresora para vincularla o seleccionarla."
+                } else {
+                    "No se encontraron dispositivos. Enciende la impresora y activa su modo de vinculación."
+                }
+            },
+        )
+        result.onSuccess { message ->
+            _isScanningPrinters.value = true
+            _feedbackMessage.value = message
+        }.onFailure { error ->
+            _isScanningPrinters.value = false
+            _feedbackMessage.value = error.message ?: "No se pudo buscar impresoras Bluetooth"
+        }
+    }
+
+    fun stopPrinterScan() {
+        printerManager.cancelBluetoothDiscovery()
+        _isScanningPrinters.value = false
     }
 
     fun selectPrinter(device: PairedPrinterDevice) {
         viewModelScope.launch {
-            repository.updatePrinterSettings(device.type, device.name, device.address)
-            _feedbackMessage.value = "Impresora seleccionada: ${device.name}"
+            if (device.type != "BLUETOOTH" || device.isPaired || device.isLowEnergy) {
+                savePrinterSelection(device)
+                return@launch
+            }
+            _feedbackMessage.value = "Solicitando vinculación de ${device.name}…"
+            val request = printerManager.requestBluetoothPairing(device.address) { pairingResult ->
+                viewModelScope.launch {
+                    pairingResult.onSuccess {
+                        savePrinterSelection(device.copy(isPaired = true))
+                        refreshPrinters()
+                    }.onFailure {
+                        _feedbackMessage.value = it.message ?: "No se pudo vincular la impresora"
+                    }
+                }
+            }
+            request.onSuccess { _feedbackMessage.value = it }
+                .onFailure { _feedbackMessage.value = it.message ?: "No se pudo iniciar la vinculación" }
+        }
+    }
+
+    private suspend fun savePrinterSelection(device: PairedPrinterDevice) {
+        val transport = if (device.isLowEnergy) "BLE" else "CLASSIC"
+        repository.updatePrinterSettings(device.type, device.name, device.address, transport)
+        _feedbackMessage.value = when {
+            device.type == "USB" -> "Impresora USB seleccionada: ${device.name}"
+            device.isLowEnergy && !device.isPaired -> "Impresora Bluetooth LE seleccionada. Toca Prueba 60mm para conectarla."
+            else -> "Impresora Bluetooth vinculada y seleccionada: ${device.name}"
         }
     }
 
     fun selectPrinterType(type: String) {
         viewModelScope.launch {
             val current = repository.getSettingsOnce()
-            repository.updatePrinterSettings(type, current.printerName, current.printerAddress)
+            repository.updatePrinterSettings(type, current.printerName, current.printerAddress, current.printerTransport)
         }
     }
 

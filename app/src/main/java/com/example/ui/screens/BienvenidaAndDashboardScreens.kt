@@ -51,6 +51,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.BuildConfig
 import com.example.data.local.entity.AbonoEntity
 import com.example.data.local.entity.BusinessSettingsEntity
 import com.example.data.local.entity.DeliveryEntity
@@ -105,7 +106,7 @@ fun BienvenidaScreen(
         ) {
             Image(
                 painter = painterResource(R.drawable.img_welcome_hero),
-                contentDescription = "Emblema H y H HUEVOS - LOS MAS FRESCOS DE LA ZONA",
+                contentDescription = "Emblema ${BuildConfig.BRAND_APP_NAME} - ${BuildConfig.BRAND_SLOGAN}",
                 contentScale = ContentScale.Fit,
                 modifier = Modifier.fillMaxSize(),
             )
@@ -261,7 +262,7 @@ fun BienvenidaScreen(
         Spacer(Modifier.height(14.dp))
 
         Text(
-            text = "H y H HUEVOS • Operaciones Locales • MXN",
+            text = "${BuildConfig.BRAND_APP_NAME} • Operaciones Locales • MXN",
             style = MaterialTheme.typography.labelSmall,
             color = OnSurfaceVariant.copy(alpha = 0.7f),
             textAlign = TextAlign.Center,
