@@ -18,6 +18,7 @@ import com.example.data.local.entity.InventoryBrandEntity
 import com.example.data.local.entity.ReminderEntity
 import com.example.data.local.entity.SugarInventoryEntity
 import com.example.data.local.entity.SugarPurchaseEntity
+import com.example.data.local.entity.RouteIncidentEntity
 
 @Database(
     entities = [
@@ -32,8 +33,9 @@ import com.example.data.local.entity.SugarPurchaseEntity
         BusinessSettingsEntity::class,
         SugarPurchaseEntity::class,
         SugarInventoryEntity::class,
+        RouteIncidentEntity::class,
     ],
-    version = 7,
+    version = 10,
     exportSchema = false,
 )
 abstract class HyhDatabase : RoomDatabase() {
@@ -134,13 +136,54 @@ abstract class HyhDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE deliveries ADD COLUMN localId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE deliveries ADD COLUMN syncStatus TEXT NOT NULL DEFAULT 'LOCAL'")
+                db.execSQL("ALTER TABLE deliveries ADD COLUMN routeVendorName TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE deliveries ADD COLUMN routeDriverName TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE deliveries ADD COLUMN routeHelperName TEXT NOT NULL DEFAULT ''")
+                db.execSQL("UPDATE deliveries SET localId = lower(hex(randomblob(16))) WHERE localId = ''")
+                db.execSQL("ALTER TABLE abonos ADD COLUMN localId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE abonos ADD COLUMN syncStatus TEXT NOT NULL DEFAULT 'LOCAL'")
+                db.execSQL("UPDATE abonos SET localId = lower(hex(randomblob(16))) WHERE localId = ''")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS route_incidents (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        localId TEXT NOT NULL,
+                        type TEXT NOT NULL,
+                        description TEXT NOT NULL,
+                        productOrBrand TEXT NOT NULL,
+                        quantity REAL,
+                        amountMxn REAL,
+                        createdAtMillis INTEGER NOT NULL,
+                        syncStatus TEXT NOT NULL
+                    )
+                """.trimIndent())
+            }
+        }
+
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE clients ADD COLUMN windowsId TEXT")
+            }
+        }
+
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE route_incidents ADD COLUMN routeVendorName TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE route_incidents ADD COLUMN routeDriverName TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE route_incidents ADD COLUMN routeHelperName TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun getInstance(context: Context): HyhDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     HyhDatabase::class.java,
                     "hyh_huevos_local.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7).build().also { INSTANCE = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10).build().also { INSTANCE = it }
             }
         }
     }

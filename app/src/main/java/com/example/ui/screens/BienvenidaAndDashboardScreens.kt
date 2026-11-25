@@ -278,6 +278,7 @@ fun PanelPrincipalScreen(
     inventoryBrands: List<InventoryBrandEntity>,
     dueTodayReminders: List<ReminderEntity>,
     onOpenDrawer: () -> Unit,
+    showInventory: Boolean = true,
 ) {
     val todayLabel = remember {
         SimpleDateFormat("dd 'de' MMMM 'de' yyyy", Locale("es", "MX")).format(Date())
@@ -486,13 +487,13 @@ fun PanelPrincipalScreen(
             }
 
             // Resumen de Inventario (solo lectura en Panel; sin botones duplicados)
-            if (inventoryBrands.isEmpty()) {
+            if (showInventory && inventoryBrands.isEmpty()) {
                 AuroraEmptyState(
                     icon = Icons.Default.Inventory2,
                     title = "Sin movimientos de inventario",
                     subtitle = "Abre el menú lateral (≡) para registrar clientes, compras de huevo o nuevas entregas.",
                 )
-            } else {
+            } else if (showInventory) {
                 AuroraCard {
                     Row(
                         modifier = Modifier.fillMaxWidth(),

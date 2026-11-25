@@ -96,6 +96,7 @@ fun ClientesScreen(
     onOpenClientProfile: (Long) -> Unit,
     onSaveClient: (id: Long, name: String, phone: String, address: String, specialPrice: String, onSaved: () -> Unit) -> Unit,
     onDeleteClient: (ClientEntity) -> Unit,
+    allowOwnerEdits: Boolean = true,
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var selectedFilter by remember { mutableIntStateOf(0) } // 0=Todos, 1=Con Deuda, 2=Tarifa Especial
@@ -137,7 +138,7 @@ fun ClientesScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            item {
+            if (allowOwnerEdits) item {
                 AuroraPrimaryButton(
                     text = "Registrar Cliente",
                     icon = Icons.Default.PersonAdd,
@@ -216,8 +217,10 @@ fun ClientesScreen(
                     AuroraEmptyState(
                         icon = Icons.Default.Store,
                         title = if (clients.isEmpty()) "Aún no hay clientes registrados" else "Sin resultados",
-                        subtitle = if (clients.isEmpty()) {
+                        subtitle = if (clients.isEmpty() && allowOwnerEdits) {
                             "Presiona 'Registrar Cliente' para agregar el primer negocio o cliente."
+                        } else if (clients.isEmpty()) {
+                            "Este teléfono aún no descargó el catálogo de Windows."
                         } else {
                             "Intenta con otro nombre, calle o filtro."
                         },
@@ -234,6 +237,7 @@ fun ClientesScreen(
                             showFormDialog = true
                         },
                         onDelete = { clientToDelete = item.client },
+                        showAdminActions = allowOwnerEdits,
                     )
                 }
             }
@@ -276,6 +280,7 @@ private fun ClientListCard(
     onClick: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    showAdminActions: Boolean,
 ) {
     val client = item.client
     val tariff = client.specialPricePerKg ?: globalPrice
@@ -338,12 +343,14 @@ private fun ClientListCard(
                     }
                 }
             }
-            IconButton(onClick = onEdit, modifier = Modifier.size(48.dp)) {
-                Icon(imageVector = Icons.Default.Edit, contentDescription = "Editar cliente", tint = Primary)
-            }
-            if (item.deliveryCount == 0) {
-                IconButton(onClick = onDelete, modifier = Modifier.size(48.dp)) {
-                    Icon(imageVector = Icons.Default.DeleteOutline, contentDescription = "Eliminar cliente", tint = Error)
+            if (showAdminActions) {
+                IconButton(onClick = onEdit, modifier = Modifier.size(48.dp)) {
+                    Icon(imageVector = Icons.Default.Edit, contentDescription = "Editar cliente", tint = Primary)
+                }
+                if (item.deliveryCount == 0) {
+                    IconButton(onClick = onDelete, modifier = Modifier.size(48.dp)) {
+                        Icon(imageVector = Icons.Default.DeleteOutline, contentDescription = "Eliminar cliente", tint = Error)
+                    }
                 }
             }
         }

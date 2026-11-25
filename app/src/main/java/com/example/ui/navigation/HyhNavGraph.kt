@@ -100,6 +100,10 @@ import com.example.ui.screens.RecordatoriosScreen
 import com.example.ui.screens.RespaldosLocalesScreen
 import com.example.ui.screens.TicketScreen
 import com.example.ui.screens.ComprasHuevoScreen
+import com.example.ui.screens.RouteCrewAssignmentScreen
+import com.example.ui.screens.RouteIncidentScreen
+import com.example.ui.screens.DirectoLoginScreen
+import com.example.ui.screens.DirectoSyncScreen
 import com.example.ui.theme.OnSurface
 import com.example.ui.theme.OnSurfaceVariant
 import com.example.ui.theme.Primary
@@ -113,6 +117,7 @@ import kotlinx.coroutines.launch
 import java.math.BigDecimal
 
 object HyhRoutes {
+    const val DIRECTO_LOGIN = "directo_login"
     const val BIENVENIDA = "bienvenida"
     const val PANEL_PRINCIPAL = "panel_principal"
     const val CLIENTES = "clientes"
@@ -130,6 +135,9 @@ object HyhRoutes {
     const val RESPALDOS_LOCALES = "respaldos_locales"
     const val CREDITO_CONFIG = "credito_config"
     const val CONFIGURACION = "configuracion"
+    const val PERSONAL_RUTA = "personal_ruta"
+    const val MERMAS_INCIDENTES = "mermas_incidentes"
+    const val SYNC_WINDOWS = "sync_windows"
     const val CREMERIA = "cremeria"
     const val CREMERIA_NUEVA_ENTREGA = "cremeria_nueva_entrega"
     const val CREMERIA_PAGO = "cremeria_pago"
@@ -161,15 +169,29 @@ private val drawerModules = buildList {
     if (BuildConfig.FLAVOR == "lili") {
         add(DrawerModuleItem(HyhRoutes.CREMERIA, "Cremería del Patrón", Icons.Default.Store, "drawer_cremeria"))
     }
+    if (BuildConfig.FLAVOR == "directodegranja") {
+        addAll(listOf(
+            DrawerModuleItem(HyhRoutes.SYNC_WINDOWS, "Sincronizar con Windows", Icons.Default.ReceiptLong, "drawer_sync_windows"),
+            DrawerModuleItem(HyhRoutes.PERSONAL_RUTA, "Personal de ruta", Icons.Default.People, "drawer_personal_ruta"),
+            DrawerModuleItem(HyhRoutes.MERMAS_INCIDENTES, "Mermas e incidentes", Icons.Default.NotificationsActive, "drawer_mermas_incidentes"),
+        ))
+    } else {
+        addAll(listOf(
+            DrawerModuleItem(HyhRoutes.COMPRAS_HUEVO, "Compras de Huevo", Icons.Default.AddShoppingCart, "drawer_compras"),
+            DrawerModuleItem(HyhRoutes.INVENTARIO, "Inventario", Icons.Default.Inventory2, "drawer_inventario"),
+        ))
+    }
     addAll(listOf(
-        DrawerModuleItem(HyhRoutes.COMPRAS_HUEVO, "Compras de Huevo", Icons.Default.AddShoppingCart, "drawer_compras"),
-        DrawerModuleItem(HyhRoutes.INVENTARIO, "Inventario", Icons.Default.Inventory2, "drawer_inventario"),
         DrawerModuleItem(HyhRoutes.RECORDATORIOS, "Recordatorios", Icons.Default.NotificationsActive, "drawer_recordatorios"),
         DrawerModuleItem(HyhRoutes.CIERRES_DIARIOS, "Cierres Diarios", Icons.Default.PointOfSale, "drawer_cierres"),
         DrawerModuleItem(HyhRoutes.RESPALDOS_LOCALES, "Respaldos Locales", Icons.Default.FolderZip, "drawer_respaldos"),
-        DrawerModuleItem(HyhRoutes.CREDITO_CONFIG, "Crédito y Leyenda", Icons.Default.Schedule, "drawer_credito_config"),
-        DrawerModuleItem(HyhRoutes.CONFIGURACION, "Configuración", Icons.Default.Settings, "drawer_configuracion"),
     ))
+    if (BuildConfig.FLAVOR != "directodegranja") {
+        addAll(listOf(
+            DrawerModuleItem(HyhRoutes.CREDITO_CONFIG, "Crédito y Leyenda", Icons.Default.Schedule, "drawer_credito_config"),
+            DrawerModuleItem(HyhRoutes.CONFIGURACION, "Configuración", Icons.Default.Settings, "drawer_configuracion"),
+        ))
+    }
 }
 
 private val topLevelDrawerRoutes = drawerModules.map { it.route }.toSet()
@@ -197,6 +219,8 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
     val dueTodayReminders by viewModel.dueTodayBannerReminders.collectAsStateWithLifecycle()
     val closings by viewModel.dailyClosings.collectAsStateWithLifecycle()
     val backups by viewModel.backups.collectAsStateWithLifecycle()
+    val routeCrew by viewModel.routeCrew.collectAsStateWithLifecycle()
+    val routeIncidents by viewModel.routeIncidents.collectAsStateWithLifecycle()
     val overlayState by viewModel.overlayState.collectAsStateWithLifecycle()
     val draft by viewModel.deliveryDraft.collectAsStateWithLifecycle()
     val cremeriaDraft by viewModel.cremeriaDraft.collectAsStateWithLifecycle()
@@ -204,6 +228,7 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
     val pendingSafSave by viewModel.pendingSafSave.collectAsStateWithLifecycle()
     val printers by viewModel.pairedPrinters.collectAsStateWithLifecycle()
     val isScanningPrinters by viewModel.isScanningPrinters.collectAsStateWithLifecycle()
+    val directoAuthenticated by viewModel.directoAuthenticated.collectAsStateWithLifecycle()
 
     val safCreateLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("*/*"),
@@ -299,7 +324,7 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                         }
 
                         Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
-                            AuroraStatusBadge(text = "MODO LOCAL OFFLINE", tint = PrimaryGlow)
+                            AuroraStatusBadge(text = if (BuildConfig.FLAVOR == "directodegranja") "RUTA · GUARDA SIN CONEXIÓN" else "MODO LOCAL OFFLINE", tint = PrimaryGlow)
                         }
 
                         HorizontalDivider(
@@ -353,8 +378,20 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                 ) {
                     NavHost(
                         navController = navController,
-                        startDestination = HyhRoutes.BIENVENIDA,
+                        startDestination = if (BuildConfig.FLAVOR == "directodegranja" && !directoAuthenticated) HyhRoutes.DIRECTO_LOGIN else HyhRoutes.BIENVENIDA,
                     ) {
+                        composable(HyhRoutes.DIRECTO_LOGIN) {
+                            DirectoLoginScreen(
+                                initialServerUrl = viewModel.directoServerUrl,
+                                onLogin = viewModel::loginDirecto,
+                                onAuthenticated = {
+                                    navController.navigate(HyhRoutes.BIENVENIDA) {
+                                        popUpTo(HyhRoutes.DIRECTO_LOGIN) { inclusive = true }
+                                        launchSingleTop = true
+                                    }
+                                },
+                            )
+                        }
                         composable(HyhRoutes.BIENVENIDA) {
                             BienvenidaScreen(
                                 settings = settings,
@@ -385,6 +422,36 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                                 inventoryBrands = inventoryBrands,
                                 dueTodayReminders = dueTodayReminders,
                                 onOpenDrawer = { scope.launch { drawerState.open() } },
+                                showInventory = BuildConfig.FLAVOR != "directodegranja",
+                            )
+                        }
+
+                        composable(HyhRoutes.PERSONAL_RUTA) {
+                            BackHandler { navigateToTopModule(HyhRoutes.PANEL_PRINCIPAL) }
+                            RouteCrewAssignmentScreen(
+                                assignment = routeCrew,
+                                onOpenDrawer = { scope.launch { drawerState.open() } },
+                                onSave = viewModel::saveRouteCrew,
+                            )
+                        }
+
+                        composable(HyhRoutes.MERMAS_INCIDENTES) {
+                            BackHandler { navigateToTopModule(HyhRoutes.PANEL_PRINCIPAL) }
+                            RouteIncidentScreen(
+                                incidents = routeIncidents,
+                                onOpenDrawer = { scope.launch { drawerState.open() } },
+                                onSave = viewModel::registerRouteIncident,
+                            )
+                        }
+
+                        composable(HyhRoutes.SYNC_WINDOWS) {
+                            BackHandler { navigateToTopModule(HyhRoutes.PANEL_PRINCIPAL) }
+                            DirectoSyncScreen(
+                                userName = viewModel.directoUserName,
+                                customerCount = clients.size,
+                                foliosRemaining = viewModel.directoFoliosRemaining,
+                                onOpenDrawer = { scope.launch { drawerState.open() } },
+                                onSync = viewModel::syncDirectoData,
                             )
                         }
 
@@ -401,6 +468,7 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                                     viewModel.saveClient(id, name, phone, address, specialPrice, onSaved)
                                 },
                                 onDeleteClient = { client -> viewModel.deleteClient(client) },
+                                allowOwnerEdits = BuildConfig.FLAVOR != "directodegranja",
                             )
                         }
 
@@ -528,6 +596,7 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                                 onDownloadPdf = viewModel::downloadDeliveryPdf,
                                 onDownloadJson = viewModel::downloadDeliveryJson,
                                 onCancelDelivery = { id, reason -> viewModel.cancelDelivery(id, reason) },
+                                allowCancel = BuildConfig.FLAVOR != "directodegranja",
                             )
                         }
 
@@ -543,6 +612,7 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                                     }
                                 },
                                 onCancelDelivery = { id, reason -> viewModel.cancelDelivery(id, reason) },
+                                allowCancel = BuildConfig.FLAVOR != "directodegranja",
                             )
                         }
 

@@ -21,6 +21,7 @@ import com.example.data.local.entity.InventoryBrandEntity
 import com.example.data.local.entity.ReminderEntity
 import com.example.data.local.entity.SugarInventoryEntity
 import com.example.data.local.entity.SugarPurchaseEntity
+import com.example.data.local.entity.RouteIncidentEntity
 import com.example.data.local.entity.SalesChannel
 import com.example.domain.CalculationEngine
 import com.example.domain.DeliveryCalculationResult
@@ -28,7 +29,10 @@ import com.example.domain.DeliveryModality
 import com.example.domain.PaymentMethod
 import com.example.domain.WeighedBoxItem
 import com.example.system.PairedPrinterDevice
+import com.example.system.DirectoSessionStore
+import com.example.system.WindowsApiClient
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -38,15 +42,28 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.Calendar
+import org.json.JSONArray
+import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 data class ClientWithDebt(
     val client: ClientEntity,
     val activeDebtMxn: Double,
     val deliveryCount: Int,
+)
+
+data class RouteCrewAssignment(
+    val vendorName: String = "",
+    val driverName: String = "",
+    val helperName: String = "",
 )
 
 data class DeliveryDraftState(
@@ -92,6 +109,151 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = app.repository
     private val soundManager = app.soundManager
     private val printerManager = app.printerManager
+    private val directoSessionStore = DirectoSessionStore(application)
+    private val _directoAuthenticated = MutableStateFlow(BuildConfig.FLAVOR != "directodegranja" || directoSessionStore.token() != null)
+    val directoAuthenticated: StateFlow<Boolean> = _directoAuthenticated.asStateFlow()
+    val directoServerUrl: String get() = directoSessionStore.serverUrl()
+    val directoUserName: String get() = directoSessionStore.userName()
+    val directoFoliosRemaining: Int get() = directoSessionStore.foliosRemaining()
+
+    suspend fun loginDirecto(serverUrl: String, email: String, password: String): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val result = WindowsApiClient.loginAndRegisterDevice(serverUrl, email, password, directoSessionStore.deviceId())
+            directoSessionStore.saveSession(serverUrl, result.token, result.userName)
+            _directoAuthenticated.value = true
+        }.exceptionOrNull()?.message
+    }
+
+    suspend fun syncDirectoData(): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = directoSessionStore.token() ?: throw IllegalStateException("Inicia sesión primero")
+            val serverUrl = directoSessionStore.serverUrl()
+            val deviceId = directoSessionStore.deviceId()
+            val snapshot = WindowsApiClient.downloadSnapshot(
+                serverUrl,
+                token,
+                deviceId,
+            )
+            repository.applyWindowsClients(snapshot.customers)
+            if (snapshot.pricePerKg > 0.0) repository.applyWindowsDailyPrice(snapshot.pricePerKg)
+            directoSessionStore.saveFolios(snapshot.folioSeries, snapshot.folios)
+            val pendingDeliveries = repository.pendingDeliveriesForSync()
+            val pendingAbonos = repository.pendingAbonosForSync()
+            val pendingIncidents = repository.pendingIncidentsForSync()
+            val deliveriesJson = JSONArray()
+            val paymentsJson = JSONArray()
+            pendingDeliveries.forEach { delivery ->
+                val client = repository.getClientOnce(delivery.clientId)
+                    ?: throw IllegalStateException("No se encontró el cliente de la entrega ${delivery.folio}")
+                val windowsClientId = client.windowsId
+                    ?: throw IllegalStateException("El cliente ${client.name} aún no está vinculado al catálogo de Windows")
+                val itemSnapshot = runCatching { JSONArray(delivery.itemsSnapshotJson) }.getOrElse { JSONArray() }
+                val syncedItems = JSONArray()
+                for (index in 0 until itemSnapshot.length()) {
+                    val item = itemSnapshot.optJSONObject(index) ?: continue
+                    val inputKg = item.optString("inputKg").toBigDecimalOrNull() ?: BigDecimal.ZERO
+                    val tareKg = item.optString("tareKg").toBigDecimalOrNull() ?: BigDecimal.ZERO
+                    val netKg = item.optString("netKg").toBigDecimalOrNull() ?: BigDecimal.ZERO
+                    val boxes = item.optString("boxes").toBigDecimalOrNull() ?: BigDecimal.ONE
+                    val price = item.optString("priceKg").toBigDecimalOrNull() ?: BigDecimal.valueOf(delivery.pricePerKg)
+                    syncedItems.put(
+                        JSONObject()
+                            .put("id", "${delivery.localId}-$index")
+                            .put("modality", item.optString("modality"))
+                            .put("boxesDecimal", boxes.toDouble())
+                            .put("inputWeightKg", inputKg.toDouble())
+                            .put("tareDeductionKg", tareKg.toDouble())
+                            .put("netWeightKg", netKg.toDouble())
+                            .put("brand", item.optString("brand", delivery.brand))
+                            .put("pricePerKg", price.toDouble()),
+                    )
+                }
+                val folioNumber = delivery.folio.substringAfterLast('-').toIntOrNull()
+                    ?: throw IllegalStateException("El folio ${delivery.folio} no es oficial")
+                val record = JSONObject()
+                    .put("id", delivery.localId)
+                    .put("customerId", windowsClientId)
+                    .put("folioNumber", folioNumber)
+                    .put("driverName", delivery.routeDriverName)
+                    .put("helpersNames", JSONArray().apply { if (delivery.routeHelperName.isNotBlank()) put(delivery.routeHelperName) })
+                    .put("createdAtUtc", toUtcIso(delivery.dateMillis))
+                    .put("priceCentavosPerKg", (delivery.pricePerKg * 100).toInt())
+                    .put("paymentTerm", delivery.paymentMethod)
+                    .put("isSpecialPrice", client.specialPricePerKg != null)
+                    .put("items", syncedItems)
+                if (delivery.sugarSacks > 0) {
+                    record.put("sugar", JSONObject()
+                        .put("sacks", delivery.sugarSacks)
+                        .put("weightPerSackKg", delivery.sugarSackWeightKg)
+                        .put("pricePerSackMxn", delivery.sugarPricePerSackMxn))
+                }
+                deliveriesJson.put(record)
+                if (delivery.initialPaymentMxn > 0) {
+                    paymentsJson.put(JSONObject()
+                        .put("id", "pay-initial-${delivery.localId}")
+                        .put("customerId", windowsClientId)
+                        .put("deliveryId", delivery.localId)
+                        .put("amountCentavos", (delivery.initialPaymentMxn * 100).toInt())
+                        .put("method", "efectivo")
+                        .put("createdAtUtc", toUtcIso(delivery.dateMillis))
+                        .put("note", "Pago inicial registrado en Android"))
+                }
+            }
+            pendingAbonos.forEach { abono ->
+                val client = repository.getClientOnce(abono.clientId) ?: return@forEach
+                val windowsClientId = client.windowsId ?: return@forEach
+                val linkedDelivery = repository.getDeliveryOnce(abono.deliveryId) ?: return@forEach
+                paymentsJson.put(JSONObject()
+                    .put("id", "pay-${abono.localId}")
+                    .put("customerId", windowsClientId)
+                    .put("deliveryId", linkedDelivery.localId)
+                    .put("amountCentavos", (abono.amountMxn * 100).toInt())
+                    .put("method", "efectivo")
+                    .put("createdAtUtc", toUtcIso(abono.dateMillis))
+                    .put("note", abono.note.ifBlank { "Abono capturado en Android" }))
+            }
+            val lossesJson = JSONArray()
+            val incidentsJson = JSONArray()
+            pendingIncidents.forEach { incident ->
+                if (incident.type == "MERMA" && incident.quantity != null && incident.quantity > 0) {
+                    lossesJson.put(JSONObject().put("id", "loss-${incident.localId}")
+                        .put("lostGrams", (incident.quantity * 1000).toInt())
+                        .put("note", incident.description)
+                        .put("driverName", incident.routeDriverName)
+                        .put("helpersNames", JSONArray().apply { if (incident.routeHelperName.isNotBlank()) put(incident.routeHelperName) }))
+                } else if (incident.type == "INCIDENTE" && incident.amountMxn != null && incident.amountMxn > 0) {
+                    incidentsJson.put(JSONObject().put("id", "inc-${incident.localId}")
+                        .put("amountCentavos", (incident.amountMxn * 100).toInt())
+                        .put("description", incident.description)
+                        .put("type", "otro")
+                        .put("driverName", incident.routeDriverName)
+                        .put("helpersNames", JSONArray().apply { if (incident.routeHelperName.isNotBlank()) put(incident.routeHelperName) }))
+                }
+            }
+            val result = WindowsApiClient.pushAndroidBatch(serverUrl, token, deviceId, JSONObject()
+                .put("deliveries", deliveriesJson)
+                .put("payments", paymentsJson)
+                .put("losses", lossesJson)
+                .put("incidents", incidentsJson))
+            val accepted = result.optJSONArray("acceptedDeliveryIds") ?: JSONArray()
+            val acceptedSet = (0 until accepted.length()).map { accepted.optString(it) }.toSet()
+            pendingDeliveries.filter { it.localId in acceptedSet }.forEach { repository.markDeliverySynced(it.localId) }
+            val acceptedPayments = result.optJSONArray("acceptedPaymentIds") ?: JSONArray()
+            val acceptedPaymentSet = (0 until acceptedPayments.length()).map { acceptedPayments.optString(it) }.toSet()
+            pendingAbonos.filter { "pay-${it.localId}" in acceptedPaymentSet }.forEach { repository.markAbonoSynced(it.localId) }
+            val acceptedLosses = result.optJSONArray("acceptedLossIds") ?: JSONArray()
+            val acceptedLossSet = (0 until acceptedLosses.length()).map { acceptedLosses.optString(it) }.toSet()
+            val acceptedIncidents = result.optJSONArray("acceptedIncidentIds") ?: JSONArray()
+            val acceptedIncidentSet = (0 until acceptedIncidents.length()).map { acceptedIncidents.optString(it) }.toSet()
+            pendingIncidents.filter { "loss-${it.localId}" in acceptedLossSet || "inc-${it.localId}" in acceptedIncidentSet }
+                .forEach { repository.markIncidentSynced(it.localId) }
+            _feedbackMessage.value = "Windows actualizado: ${snapshot.customers.size} clientes, ${snapshot.folios.size} folios; ${accepted.length()} entregas recibidas para revisión"
+        }.exceptionOrNull()?.message
+    }
+
+    private fun toUtcIso(epochMillis: Long): String = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+        .apply { timeZone = TimeZone.getTimeZone("UTC") }
+        .format(Date(epochMillis))
 
     val settings: StateFlow<BusinessSettingsEntity> = repository.observeSettings()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), BusinessSettingsEntity())
@@ -170,6 +332,19 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
     val backups: StateFlow<List<BackupRecordEntity>> = repository.observeBackups()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val routeIncidents: StateFlow<List<RouteIncidentEntity>> = repository.observeRouteIncidents()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val crewPrefs = application.getSharedPreferences("route_crew_assignment", android.content.Context.MODE_PRIVATE)
+    private val _routeCrew = MutableStateFlow(
+        RouteCrewAssignment(
+            vendorName = crewPrefs.getString("vendor", "").orEmpty(),
+            driverName = crewPrefs.getString("driver", "").orEmpty(),
+            helperName = crewPrefs.getString("helper", "").orEmpty(),
+        ),
+    )
+    val routeCrew: StateFlow<RouteCrewAssignment> = _routeCrew.asStateFlow()
+
     private val _overlayState = MutableStateFlow<OverlayState>(OverlayState.None)
     val overlayState: StateFlow<OverlayState> = _overlayState.asStateFlow()
 
@@ -227,6 +402,43 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
 
     fun showFeedback(msg: String) {
         _feedbackMessage.value = msg
+    }
+
+    fun saveRouteCrew(vendor: String, driver: String, helper: String) {
+        val assignment = RouteCrewAssignment(vendor.trim(), driver.trim(), helper.trim())
+        crewPrefs.edit()
+            .putString("vendor", assignment.vendorName)
+            .putString("driver", assignment.driverName)
+            .putString("helper", assignment.helperName)
+            .apply()
+        _routeCrew.value = assignment
+        _feedbackMessage.value = "Personal de ruta guardado en este teléfono"
+    }
+
+    fun registerRouteIncident(
+        type: String,
+        description: String,
+        productOrBrand: String,
+        quantityText: String,
+        amountText: String,
+        onDone: () -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            runCatching {
+                val quantity = quantityText.trim().takeIf { it.isNotEmpty() }?.let {
+                    CalculationEngine.parsePositiveDecimal(it).toDouble()
+                }
+                val amount = amountText.trim().takeIf { it.isNotEmpty() }?.let {
+                    CalculationEngine.parsePositiveDecimal(it).toDouble()
+                }
+                repository.registerRouteIncident(type, description, productOrBrand, quantity, amount)
+            }.onSuccess {
+                _feedbackMessage.value = if (type == "MERMA") "Merma guardada en este teléfono" else "Incidente guardado en este teléfono"
+                onDone()
+            }.onFailure {
+                _feedbackMessage.value = it.message ?: "No se pudo guardar el registro"
+            }
+        }
     }
 
     // --- Overlays operacionales (Sección 11) ---

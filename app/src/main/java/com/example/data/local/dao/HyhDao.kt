@@ -17,10 +17,23 @@ import com.example.data.local.entity.InventoryBrandEntity
 import com.example.data.local.entity.ReminderEntity
 import com.example.data.local.entity.SugarInventoryEntity
 import com.example.data.local.entity.SugarPurchaseEntity
+import com.example.data.local.entity.RouteIncidentEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface HyhDao {
+    @Query("SELECT * FROM route_incidents ORDER BY createdAtMillis DESC, id DESC")
+    fun observeRouteIncidents(): Flow<List<RouteIncidentEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertRouteIncident(incident: RouteIncidentEntity): Long
+
+    @Query("SELECT * FROM route_incidents WHERE syncStatus = 'PENDIENTE' ORDER BY createdAtMillis ASC, id ASC")
+    suspend fun getPendingSyncRouteIncidents(): List<RouteIncidentEntity>
+
+    @Query("UPDATE route_incidents SET syncStatus = :status WHERE localId = :localId")
+    suspend fun updateRouteIncidentSyncStatus(localId: String, status: String)
+
     // --- Settings ---
     @Query("SELECT * FROM business_settings WHERE id = 1")
     fun observeSettings(): Flow<BusinessSettingsEntity?>
@@ -43,6 +56,12 @@ interface HyhDao {
 
     @Query("SELECT * FROM clients WHERE id = :id")
     suspend fun getClientById(id: Long): ClientEntity?
+
+    @Query("SELECT * FROM clients WHERE windowsId = :windowsId LIMIT 1")
+    suspend fun getClientByWindowsId(windowsId: String): ClientEntity?
+
+    @Query("SELECT * FROM clients WHERE name = :name COLLATE NOCASE LIMIT 1")
+    suspend fun getClientByName(name: String): ClientEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertClient(client: ClientEntity): Long
@@ -104,6 +123,12 @@ interface HyhDao {
     @Query("SELECT * FROM deliveries ORDER BY dateMillis DESC, id DESC")
     suspend fun getAllDeliveriesOnce(): List<DeliveryEntity>
 
+    @Query("SELECT * FROM deliveries WHERE salesChannel = 'PUBLIC' AND syncStatus = 'PENDIENTE' ORDER BY dateMillis ASC, id ASC")
+    suspend fun getPendingSyncDeliveries(): List<DeliveryEntity>
+
+    @Query("UPDATE deliveries SET syncStatus = :status WHERE localId = :localId")
+    suspend fun updateDeliverySyncStatus(localId: String, status: String)
+
     @Query("SELECT * FROM deliveries WHERE salesChannel = 'PUBLIC' ORDER BY dateMillis DESC, id DESC")
     suspend fun getPublicDeliveriesOnce(): List<DeliveryEntity>
 
@@ -149,6 +174,12 @@ interface HyhDao {
 
     @Query("SELECT * FROM abonos ORDER BY dateMillis DESC, id DESC")
     suspend fun getAllAbonosOnce(): List<AbonoEntity>
+
+    @Query("SELECT * FROM abonos WHERE salesChannel = 'PUBLIC' AND isCancelled = 0 AND syncStatus = 'PENDIENTE' ORDER BY dateMillis ASC, id ASC")
+    suspend fun getPendingSyncAbonos(): List<AbonoEntity>
+
+    @Query("UPDATE abonos SET syncStatus = :status WHERE localId = :localId")
+    suspend fun updateAbonoSyncStatus(localId: String, status: String)
 
     @Query("SELECT * FROM abonos WHERE salesChannel = 'PUBLIC' ORDER BY dateMillis DESC, id DESC")
     suspend fun getAllPublicAbonosOnce(): List<AbonoEntity>

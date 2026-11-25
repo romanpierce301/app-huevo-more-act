@@ -23,11 +23,13 @@ import com.example.data.local.entity.ReminderEntity
 import com.example.data.local.entity.SalesChannel
 import com.example.data.local.entity.SugarInventoryEntity
 import com.example.data.local.entity.SugarPurchaseEntity
+import com.example.data.local.entity.RouteIncidentEntity
 import com.example.domain.CalculationEngine
 import com.example.domain.DeliveryModality
 import com.example.domain.PaymentMethod
 import com.example.domain.WeighedBoxItem
 import com.example.system.JsonExporter
+import com.example.system.DirectoSessionStore
 import com.example.system.PdfDocumentGenerator
 import com.example.system.ReminderScheduler
 import kotlinx.coroutines.Dispatchers
@@ -102,6 +104,44 @@ class HyhRepository(
 
     fun observeBackups(): Flow<List<BackupRecordEntity>> = dao.observeBackups()
 
+    fun observeRouteIncidents(): Flow<List<RouteIncidentEntity>> = dao.observeRouteIncidents()
+
+    suspend fun pendingDeliveriesForSync(): List<DeliveryEntity> = dao.getPendingSyncDeliveries()
+    suspend fun pendingAbonosForSync(): List<AbonoEntity> = dao.getPendingSyncAbonos()
+    suspend fun pendingIncidentsForSync(): List<RouteIncidentEntity> = dao.getPendingSyncRouteIncidents()
+    suspend fun getDeliveryOnce(id: Long): DeliveryEntity? = dao.getDeliveryById(id)
+    suspend fun markDeliverySynced(localId: String) = dao.updateDeliverySyncStatus(localId, "RECIBIDA")
+    suspend fun markAbonoSynced(localId: String) = dao.updateAbonoSyncStatus(localId, "RECIBIDA")
+    suspend fun markIncidentSynced(localId: String) = dao.updateRouteIncidentSyncStatus(localId, "RECIBIDA")
+
+    suspend fun registerRouteIncident(
+        type: String,
+        description: String,
+        productOrBrand: String,
+        quantity: Double?,
+        amountMxn: Double?,
+    ) {
+        require(type in setOf("MERMA", "INCIDENTE")) { "Tipo de registro inválido" }
+        require(description.isNotBlank()) { "Describe lo ocurrido" }
+        require(quantity == null || quantity.isFinite() && quantity >= 0) { "Cantidad inválida" }
+        require(amountMxn == null || amountMxn.isFinite() && amountMxn >= 0) { "Importe inválido" }
+        if (type == "MERMA") require(quantity != null && quantity > 0) { "Indica la cantidad de la merma" }
+        if (type == "INCIDENTE") require(amountMxn != null && amountMxn > 0) { "Indica el importe del incidente" }
+        val crew = context.getSharedPreferences("route_crew_assignment", Context.MODE_PRIVATE)
+        dao.insertRouteIncident(
+            RouteIncidentEntity(
+                type = type,
+                description = description.trim(),
+                productOrBrand = productOrBrand.trim(),
+                quantity = quantity,
+                amountMxn = amountMxn,
+                routeVendorName = crew.getString("vendor", "").orEmpty(),
+                routeDriverName = crew.getString("driver", "").orEmpty(),
+                routeHelperName = crew.getString("helper", "").orEmpty(),
+            ),
+        )
+    }
+
     suspend fun ensureDefaultSettings(): BusinessSettingsEntity {
         val current = dao.getSettings()
         if (current != null) return current
@@ -113,6 +153,33 @@ class HyhRepository(
     suspend fun getSettingsOnce(): BusinessSettingsEntity = ensureDefaultSettings()
 
     suspend fun getClientOnce(id: Long): ClientEntity? = dao.getClientById(id)
+
+    suspend fun applyWindowsClients(remoteClients: List<ClientEntity>) = database.withTransaction {
+        remoteClients.forEach { remote ->
+            val windowsId = remote.windowsId ?: return@forEach
+            val existing = dao.getClientByWindowsId(windowsId) ?: dao.getClientByName(remote.name)
+            if (existing == null) {
+                dao.insertClient(remote.copy(id = 0))
+            } else {
+                dao.updateClient(
+                    existing.copy(
+                        windowsId = windowsId,
+                        name = remote.name,
+                        phone = remote.phone,
+                        address = remote.address,
+                        specialPricePerKg = remote.specialPricePerKg,
+                        creditTermDays = remote.creditTermDays,
+                    ),
+                )
+            }
+        }
+    }
+
+    suspend fun applyWindowsDailyPrice(pricePerKg: Double) {
+        require(pricePerKg.isFinite() && pricePerKg >= 0.0) { "Precio recibido inválido" }
+        val current = ensureDefaultSettings()
+        dao.upsertSettings(current.copy(globalPricePerKg = pricePerKg))
+    }
 
     suspend fun getDefaultBrandOnce(): String =
         dao.getAllInventoryBrandsOnce().firstOrNull()?.brand ?: "General"
@@ -354,6 +421,11 @@ class HyhRepository(
         salesChannel: String = SalesChannel.PUBLIC,
     ): Long = withContext(Dispatchers.IO) {
         require(salesChannel in setOf(SalesChannel.PUBLIC, SalesChannel.CREMERIA)) { "Canal de venta inválido" }
+        if (BuildConfig.FLAVOR == "directodegranja" && salesChannel == SalesChannel.PUBLIC) {
+            val crew = context.getSharedPreferences("route_crew_assignment", Context.MODE_PRIVATE)
+            require(!crew.getString("vendor", "").isNullOrBlank()) { "Asigna al vendedor en Personal de ruta antes de registrar entregas" }
+            require(!crew.getString("driver", "").isNullOrBlank()) { "Asigna al chofer en Personal de ruta antes de registrar entregas" }
+        }
         val hasEggs = boxes > 0.0 || weighedItems.isNotEmpty()
         val hasSugar = sugarSacks > 0.0
         require(hasEggs || hasSugar) { "Agrega al menos una caja de huevo o bultos de azúcar" }
@@ -418,7 +490,13 @@ class HyhRepository(
                 }
                 val year = SimpleDateFormat("yyyy", Locale.US).format(Date())
                 val folioPrefix = if (salesChannel == SalesChannel.CREMERIA) "CREM" else BuildConfig.BRAND_FILE_PREFIX
-                val folio = String.format(Locale.US, "$folioPrefix-%s-%04d", year, seq)
+                val folio = if (BuildConfig.FLAVOR == "directodegranja" && salesChannel == SalesChannel.PUBLIC) {
+                    val reserved = DirectoSessionStore(context).consumeNextFolio()
+                        ?: throw IllegalStateException("No hay folios oficiales disponibles. Conéctate a Windows antes de iniciar otra ruta.")
+                    String.format(Locale.US, "%s-%04d", reserved.first, reserved.second)
+                } else {
+                    String.format(Locale.US, "$folioPrefix-%s-%04d", year, seq)
+                }
 
                 val signaturePath = if (paymentMethod == PaymentMethod.CREDITO && signatureBitmap != null) {
                     val sigDir = File(context.filesDir, "signatures").apply { mkdirs() }
@@ -439,9 +517,13 @@ class HyhRepository(
                 }
                 val prevDebtBd = BigDecimal.valueOf(previousDebt).setScale(2, RoundingMode.HALF_UP)
                 val totalAccumBd = prevDebtBd.add(pendingBd).setScale(2, RoundingMode.HALF_UP)
+                val routeCrewPrefs = context.getSharedPreferences("route_crew_assignment", Context.MODE_PRIVATE)
 
                 val deliveryId = dao.insertDelivery(
                     DeliveryEntity(
+                        routeVendorName = routeCrewPrefs.getString("vendor", "").orEmpty(),
+                        routeDriverName = routeCrewPrefs.getString("driver", "").orEmpty(),
+                        routeHelperName = routeCrewPrefs.getString("helper", "").orEmpty(),
                         folio = folio,
                         clientId = client.id,
                         clientName = client.name,
@@ -472,7 +554,7 @@ class HyhRepository(
                 )
 
                 // Actualizar inventario fraccionado sin redondear cajas (solo si hay huevo)
-                if (hasEggs) {
+                if (hasEggs && BuildConfig.FLAVOR != "directodegranja") {
                     val itemBrandBoxes = weighedItems
                         .map { it.brand.trim().ifBlank { cleanBrand } to it.boxesDecimal }
                         .groupBy({ it.first }, { it.second })

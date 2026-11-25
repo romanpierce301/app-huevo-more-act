@@ -3,6 +3,7 @@ package com.example.data.local.entity
 import com.example.BuildConfig
 
 import androidx.room.Entity
+import androidx.room.ColumnInfo
 import androidx.room.PrimaryKey
 
 object SalesChannel {
@@ -15,6 +16,7 @@ object SalesChannel {
 @Entity(tableName = "clients")
 data class ClientEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val windowsId: String? = null,
     val name: String,
     val phone: String = "",
     val address: String,
@@ -73,6 +75,11 @@ data class SugarInventoryEntity(
 @Entity(tableName = "deliveries")
 data class DeliveryEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    @ColumnInfo(defaultValue = "''") val localId: String = java.util.UUID.randomUUID().toString(),
+    @ColumnInfo(defaultValue = "'LOCAL'") val syncStatus: String = "PENDIENTE",
+    @ColumnInfo(defaultValue = "''") val routeVendorName: String = "",
+    @ColumnInfo(defaultValue = "''") val routeDriverName: String = "",
+    @ColumnInfo(defaultValue = "''") val routeHelperName: String = "",
     val folio: String,
     val clientId: Long,
     val clientName: String,
@@ -106,6 +113,8 @@ data class DeliveryEntity(
 @Entity(tableName = "abonos")
 data class AbonoEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    @ColumnInfo(defaultValue = "''") val localId: String = java.util.UUID.randomUUID().toString(),
+    @ColumnInfo(defaultValue = "'LOCAL'") val syncStatus: String = "PENDIENTE",
     val clientId: Long,
     val deliveryId: Long,
     val deliveryFolio: String,
@@ -158,6 +167,22 @@ data class BackupRecordEntity(
     val format: String,
     val sizeBytes: Long,
     val createdAtMillis: Long = System.currentTimeMillis(),
+)
+
+@Entity(tableName = "route_incidents")
+data class RouteIncidentEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val localId: String = java.util.UUID.randomUUID().toString(),
+    val type: String,
+    val description: String,
+    val productOrBrand: String = "",
+    val quantity: Double? = null,
+    val amountMxn: Double? = null,
+    @ColumnInfo(defaultValue = "''") val routeVendorName: String = "",
+    @ColumnInfo(defaultValue = "''") val routeDriverName: String = "",
+    @ColumnInfo(defaultValue = "''") val routeHelperName: String = "",
+    val createdAtMillis: Long = System.currentTimeMillis(),
+    val syncStatus: String = "PENDIENTE",
 )
 
 @Entity(tableName = "business_settings")

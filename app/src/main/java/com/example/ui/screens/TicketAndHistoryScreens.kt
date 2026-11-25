@@ -96,6 +96,7 @@ fun TicketScreen(
     onDownloadPdf: (DeliveryEntity) -> Unit,
     onDownloadJson: (DeliveryEntity) -> Unit,
     onCancelDelivery: (deliveryId: Long, reason: String) -> Unit,
+    allowCancel: Boolean = true,
 ) {
     if (delivery == null) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -205,7 +206,7 @@ fun TicketScreen(
                     )
                 }
 
-                if (delivery.status != "CANCELADA") {
+                if (allowCancel && delivery.status != "CANCELADA") {
                     Spacer(Modifier.height(12.dp))
                     AuroraDangerButton(
                         text = "Cancelar Entrega y Revertir Inventario",
@@ -237,6 +238,7 @@ fun EntregasRealizadasScreen(
     onOpenDrawer: () -> Unit,
     onOpenTicket: (Long) -> Unit,
     onCancelDelivery: (deliveryId: Long, reason: String) -> Unit,
+    allowCancel: Boolean = true,
     title: String = "Entregas Realizadas",
     newDeliveryLabel: String? = null,
     onNewDelivery: (() -> Unit)? = null,
@@ -455,7 +457,7 @@ fun EntregasRealizadasScreen(
                                 modifier = Modifier.weight(1f),
                                 testTag = "view_ticket_button_${delivery.id}",
                             )
-                            if (!isCancelled) {
+                            if (!isCancelled && allowCancel) {
                                 AuroraDangerButton(
                                     text = "Cancelar",
                                     icon = Icons.Default.Cancel,

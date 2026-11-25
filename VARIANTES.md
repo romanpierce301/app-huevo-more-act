@@ -1,52 +1,29 @@
-# Variantes de la app (Product Flavors)
+# Variantes de la app
 
-El código base vive en `app/src/main`. Cada variante (marca) es un **flavor** de Gradle
-que solo sobrescribe branding (nombre, slogan, colores, logos) sin tocar el código compartido.
-Así, cuando se actualiza el código base, **todas las variantes se actualizan automáticamente**.
+La app permite instalar distintas marcas desde el mismo código compartido. Las variantes son independientes: cada una tiene nombre, colores, ícono y carpeta local de datos.
 
-## Estructura
+## Variantes actuales
 
-- `app/src/main` → código y recursos comunes (base).
-- `app/src/hyhhuevos` → variante base (H y H HUEVOS). Usa los recursos de `main`.
-- `app/src/lili` → variante "Distribuidora de Huevos LILI".
-  - `java/com/example/brand/Brand.kt` → nombre, slogan y colores de la marca.
-  - `res/values/strings.xml` → `app_name` y `brand_slogan`.
-  - `res/drawable/img_ticket_logo.png` → logo usado en tickets y PDFs.
+- `hyhhuevos`: H y H HUEVOS.
+- `lili`: Distribuidora de Huevos LILI.
+- `directodegranja`: Directo de Granja. Esta variante conserva la lógica y base Room de Android, y es el punto de partida para integrar la sincronización.
 
-## Compilar una variante
+Los nombres, colores, prefijos y carpetas se configuran en `app/build.gradle.kts`. Los textos e imágenes propios están en `app/src/<variante>/res`.
 
-```
-./gradlew assembleHyhhuevosDebug
-./gradlew assembleLiliDebug
+## Compilar
+
+En Android Studio elige la variante `directodegranjaDebug`. También se puede compilar desde la terminal del proyecto con:
+
+```bash
+./gradlew assembleDirectodegranjaDebug
 ```
 
-Cada variante tiene su propio `applicationId`, por lo que se pueden instalar juntas.
+La app nueva usa el identificador `com.aistudio.directodegranja`, por lo que se puede instalar junto a H y H o LILI para probarla. Al instalarla aparece con una base local nueva; no mueve automáticamente los datos de otra variante. La app tiene una función de respaldo y restauración que puede servir para trasladar información, pero antes de cambiar de app hay que probar la importación con una copia del respaldo.
 
-## Dónde poner los logos
+## Recursos de marca
 
-- Ticket / PDF: `app/src/<variante>/res/drawable/img_ticket_logo.png`
-- Pantalla de bienvenida: `app/src/<variante>/res/drawable/img_welcome_hero.png`
-  (la bienvenida usa ese drawable; reemplázalo con tu logo a color si lo deseas)
-- Ícono de la app (launcher): `app/src/<variante>/res/mipmap-* / ic_launcher*.png`
-  (para un ícono adaptativo, también `mipmap-anydpi-v26/ic_launcher.xml` y `drawable/ic_launcher_foreground.png`)
+- Logo de tickets y PDF: `app/src/<variante>/res/drawable/img_ticket_logo.png`.
+- Imagen de bienvenida: `app/src/<variante>/res/drawable/img_welcome_hero.jpg`.
+- Ícono: `app/src/<variante>/res/mipmap-*`.
 
-## Crear una nueva variante
-
-1. Copia la carpeta `app/src/lili` a `app/src/<nueva>`.
-2. Edita `Brand.kt` (nombre, slogan, colores).
-3. Edita `res/values/strings.xml`.
-4. Reemplaza los logos.
-5. Añade el flavor en `app/build.gradle.kts`:
-
-```kotlin
-create("<nueva>") {
-    applicationId = "com.aistudio.hyhhuevos.<nueva>"
-}
-```
-
-## Notas
-
-- El color principal de cada variante se define en `Brand.primaryColor` y se aplica
-  automáticamente a toda la UI (Color.kt lee de Brand).
-- El código compartido nunca debe hardcodear el nombre de la marca; usa
-  `Brand.APP_NAME` / `Brand.SLOGAN` o `R.string.app_name` / `R.string.brand_slogan`.
+La variante `directodegranja` se preparó con el logotipo incluido en el proyecto de Windows. H y H y LILI mantienen sus propios recursos y configuración.
