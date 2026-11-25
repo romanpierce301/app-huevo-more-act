@@ -96,6 +96,21 @@ android {
       buildConfigField("String", "BRAND_CLOSINGS_FOLDER", "\"LILI_Cierres\"")
       buildConfigField("String", "BRAND_BACKUPS_FOLDER", "\"LILI_Backups\"")
     }
+    create("directodegranja") {
+      // Variante Directo de Granja: comparte el código y Room local con las otras marcas.
+      applicationId = "com.aistudio.directodegranja"
+      versionCode = 1
+      versionName = "1.0"
+      buildConfigField("String", "BRAND_APP_NAME", "\"Directo de Granja\"")
+      buildConfigField("String", "BRAND_SLOGAN", "\"Te faltan huevos a nosotros nos sobran\"")
+      buildConfigField("String", "BRAND_PRIMARY", "\"#8A2BE2\"")
+      buildConfigField("String", "BRAND_PRIMARY_CONTAINER", "\"#1F0E3B\"")
+      buildConfigField("String", "BRAND_PRIMARY_GLOW", "\"#C084FC\"")
+      buildConfigField("String", "BRAND_FILE_PREFIX", "\"DIRECTO\"")
+      buildConfigField("String", "BRAND_TICKETS_FOLDER", "\"Directo_de_Granja\"")
+      buildConfigField("String", "BRAND_CLOSINGS_FOLDER", "\"Directo_de_Granja_Cierres\"")
+      buildConfigField("String", "BRAND_BACKUPS_FOLDER", "\"Directo_de_Granja_Respaldos\"")
+    }
   }
   dependenciesInfo {
     includeInApk = false
