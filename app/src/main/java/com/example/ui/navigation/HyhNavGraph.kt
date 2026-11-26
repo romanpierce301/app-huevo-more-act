@@ -523,6 +523,7 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                                 client = client,
                                 settings = settings,
                                 onBack = { navController.popBackStack() },
+                                onSelectTicketVariant = viewModel::selectTicketVariant,
                                 onPrint = viewModel::printDeliveryTicket,
                                 onShareWhatsApp = viewModel::shareDeliveryPdfWhatsApp,
                                 onDownloadPdf = viewModel::downloadDeliveryPdf,
@@ -739,6 +740,7 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                                 onPrinterPermissionDenied = { viewModel.showFeedback("Para buscar la impresora, permite los permisos Bluetooth solicitados.") },
                                 isScanningPrinters = isScanningPrinters,
                                 onSelectPrinterType = viewModel::selectPrinterType,
+                                onSelectTicketVariant = viewModel::selectTicketVariant,
                                 onSelectPrinter = viewModel::selectPrinter,
                                 onTestPrinter = viewModel::testPrinter,
                             )

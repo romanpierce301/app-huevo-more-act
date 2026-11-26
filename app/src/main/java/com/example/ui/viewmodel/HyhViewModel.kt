@@ -252,9 +252,10 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             var completed = false
             try {
+                val activeVariant = com.example.domain.TicketPrintVariant.fromId(settings.value.ticketVariant)
                 _overlayState.value = OverlayState.Loading(
                     title = "Cargando ticket",
-                    message = "Preparando comprobante térmico de 60 mm...",
+                    message = "Preparando comprobante térmico de ${activeVariant.widthMm} mm (${activeVariant.shortTitle})...",
                 )
                 delay(2200)
                 completed = true
@@ -995,6 +996,14 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val current = repository.getSettingsOnce()
             repository.updatePrinterSettings(type, current.printerName, current.printerAddress, current.printerTransport)
+        }
+    }
+
+    fun selectTicketVariant(variantId: Int) {
+        viewModelScope.launch {
+            repository.updateTicketVariant(variantId)
+            val variant = com.example.domain.TicketPrintVariant.fromId(variantId)
+            _feedbackMessage.value = "Formato activo: ${variant.title}"
         }
     }
 

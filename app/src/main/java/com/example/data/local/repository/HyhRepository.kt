@@ -150,6 +150,12 @@ class HyhRepository(
         )
     }
 
+    suspend fun updateTicketVariant(variantId: Int) {
+        val current = ensureDefaultSettings()
+        val safeId = variantId.coerceIn(1, 5)
+        dao.upsertSettings(current.copy(ticketVariant = safeId))
+    }
+
     suspend fun updateCreditLegendSettings(
         creditTermDays: Int,
         moratoriumInterestPercent: Double,
@@ -1019,6 +1025,7 @@ class HyhRepository(
             creditLegendExtra = sObj?.optString("creditLegendExtra", "") ?: "",
             creditLegendClosing = sObj?.optString("creditLegendClosing", "Válido con firma digital.")
                 ?.ifBlank { "Válido con firma digital." } ?: "Válido con firma digital.",
+            ticketVariant = sObj?.optInt("ticketVariant", 1)?.coerceIn(1, 5) ?: 1,
         )
 
         fun Double.nonNegOrZero(): Double = if (isFinite() && this >= 0.0) this else 0.0

@@ -268,6 +268,7 @@ object JsonExporter {
             put("creditPaymentPlace", settings.creditPaymentPlace)
             put("creditLegendExtra", settings.creditLegendExtra)
             put("creditLegendClosing", settings.creditLegendClosing)
+            put("ticketVariant", settings.ticketVariant)
         }
 
         val sugarPurchasesArr = JSONArray().apply {

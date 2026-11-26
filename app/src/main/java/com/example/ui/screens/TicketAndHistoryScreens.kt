@@ -58,6 +58,7 @@ import com.example.data.local.entity.ClientEntity
 import com.example.data.local.entity.DeliveryEntity
 import com.example.domain.CalculationEngine
 import com.example.domain.PaymentMethod
+import com.example.domain.TicketPrintVariant
 import com.example.ui.components.AuroraCard
 import com.example.ui.components.AuroraDangerButton
 import com.example.ui.components.AuroraEmptyState
@@ -91,6 +92,7 @@ fun TicketScreen(
     client: ClientEntity?,
     settings: BusinessSettingsEntity,
     onBack: () -> Unit,
+    onSelectTicketVariant: (Int) -> Unit = {},
     onPrint: (DeliveryEntity) -> Unit,
     onShareWhatsApp: (DeliveryEntity) -> Unit,
     onDownloadPdf: (DeliveryEntity) -> Unit,
@@ -116,6 +118,7 @@ fun TicketScreen(
         return
     }
 
+    val activeVariant = TicketPrintVariant.fromId(settings.ticketVariant)
     var showCancelDialog by remember { mutableStateOf(false) }
     var signatureBitmap by remember(delivery.signaturePath) { mutableStateOf<Bitmap?>(null) }
     LaunchedEffect(delivery.signaturePath) {
@@ -128,7 +131,7 @@ fun TicketScreen(
 
     Column(modifier = Modifier.fillMaxSize()) {
         AuroraTopBar(
-            title = "Ticket 60 mm",
+            title = "Ticket ${activeVariant.widthMm} mm",
             subtitle = "${delivery.folio} • ${PaymentMethod.fromDb(delivery.paymentMethod).label}",
             showDrawerMenu = false,
             onMenuOrBackClick = onBack,
@@ -157,6 +160,48 @@ fun TicketScreen(
 
             AuroraCard {
                 Text(
+                    text = "Medida y Variante de Impresión (5 opciones)",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = OnSurface,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "${activeVariant.title} — ${activeVariant.description}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = OnSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    items(TicketPrintVariant.entries, key = { it.id }) { variant ->
+                        val selected = variant.id == activeVariant.id
+                        FilterChip(
+                            selected = selected,
+                            onClick = { onSelectTicketVariant(variant.id) },
+                            label = {
+                                Text(
+                                    text = variant.shortTitle,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Primary,
+                                selectedLabelColor = androidx.compose.ui.graphics.Color.White,
+                            ),
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("ticket_variant_chip_${variant.id}"),
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider(color = Primary.copy(alpha = 0.14f))
+                Spacer(Modifier.height(12.dp))
+
+                Text(
                     text = "Opciones del Comprobante (Independientes)",
                     style = MaterialTheme.typography.titleMedium,
                     color = OnSurface,
@@ -164,7 +209,7 @@ fun TicketScreen(
                 Spacer(Modifier.height(12.dp))
 
                 AuroraPrimaryButton(
-                    text = "Imprimir (60 mm)",
+                    text = "Imprimir (${activeVariant.dimensionsLabel} • V${activeVariant.id})",
                     icon = Icons.Default.Print,
                     onClick = { onPrint(delivery) },
                     testTag = "ticket_print_button",

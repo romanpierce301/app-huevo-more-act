@@ -201,7 +201,7 @@ class HyhRepositoryTest {
         val creditDelivery = repository.observeDeliveryById(creditId).first()!!
         val settings = repository.getSettingsOnce()
         val client = repository.getClientOnce(clientId)
-        assertEquals(170, com.example.system.PdfDocumentGenerator.TICKET_PAGE_WIDTH_PT)
+        assertEquals(164, com.example.system.PdfDocumentGenerator.TICKET_PAGE_WIDTH_PT)
         assertEquals(369, com.example.system.PdfDocumentGenerator.TICKET_PAGE_HEIGHT_PT)
         val estHeight = com.example.system.PdfDocumentGenerator.measureTicketHeight(
             context = context,
@@ -210,7 +210,7 @@ class HyhRepositoryTest {
             client = client,
         )
         assertEquals(369, estHeight)
-        val pdfCanvasBmp = Bitmap.createBitmap(170, estHeight, Bitmap.Config.ARGB_8888)
+        val pdfCanvasBmp = Bitmap.createBitmap(164, estHeight, Bitmap.Config.ARGB_8888)
         val drawnHeight = com.example.system.PdfDocumentGenerator.renderTicketToCanvas(
             context = context,
             canvas = android.graphics.Canvas(pdfCanvasBmp),
@@ -218,7 +218,7 @@ class HyhRepositoryTest {
             settings = settings,
             client = client,
         )
-        assertTrue("Ticket height ($drawnHeight) must fit within 60x130 height ($estHeight)", drawnHeight <= estHeight)
+        assertTrue("Ticket height ($drawnHeight) must fit within 58x130 height ($estHeight)", drawnHeight <= estHeight)
 
         val escPosBytes = com.example.system.ThermalPrinterManager(context)
             .buildEscPosTicketBytes(creditDelivery, settings, client)
@@ -790,9 +790,14 @@ class HyhRepositoryTest {
         )
         helper.writableDatabase.close()
 
-        // Open via Room with real MIGRATION_1_2 + MIGRATION_2_3 + MIGRATION_3_4 to validate full schema compatibility
+        // Open via Room with real MIGRATION_1_2 + MIGRATION_2_3 + MIGRATION_3_4 + MIGRATION_4_5 to validate full schema compatibility
         val upgradedDb = Room.databaseBuilder(context, HyhDatabase::class.java, dbFile.absolutePath)
-            .addMigrations(HyhDatabase.MIGRATION_1_2, HyhDatabase.MIGRATION_2_3, HyhDatabase.MIGRATION_3_4)
+            .addMigrations(
+                HyhDatabase.MIGRATION_1_2,
+                HyhDatabase.MIGRATION_2_3,
+                HyhDatabase.MIGRATION_3_4,
+                HyhDatabase.MIGRATION_4_5,
+            )
             .allowMainThreadQueries()
             .build()
         val upgradedRepo = HyhRepository(context, upgradedDb)
@@ -814,6 +819,7 @@ class HyhRepositoryTest {
         assertEquals(7, settings.creditTermDays)
         assertEquals(0.0, settings.creditMoratoriumInterestPercent, 0.001)
         assertEquals("Válido con firma digital.", settings.creditLegendClosing)
+        assertEquals(1, settings.ticketVariant)
 
         upgradedDb.close()
         dbFile.delete()
@@ -1210,7 +1216,12 @@ class HyhRepositoryTest {
         helper.writableDatabase.close()
 
         val upgradedDb = Room.databaseBuilder(context, HyhDatabase::class.java, dbFile.absolutePath)
-            .addMigrations(HyhDatabase.MIGRATION_1_2, HyhDatabase.MIGRATION_2_3, HyhDatabase.MIGRATION_3_4)
+            .addMigrations(
+                HyhDatabase.MIGRATION_1_2,
+                HyhDatabase.MIGRATION_2_3,
+                HyhDatabase.MIGRATION_3_4,
+                HyhDatabase.MIGRATION_4_5,
+            )
             .allowMainThreadQueries()
             .build()
         val upgradedRepo = HyhRepository(context, upgradedDb)
@@ -1231,9 +1242,140 @@ class HyhRepositoryTest {
 
         assertEquals(43, settings.nextFolioSequence)
         assertEquals(14, settings.creditTermDays)
+        assertEquals(1, settings.ticketVariant)
         assertEquals(0.0, sugarInv.remainingSacks, 0.001)
 
         upgradedDb.close()
         dbFile.delete()
+    }
+
+    @Test
+    fun `migration 4 to 5 preserves v4 data and defaults ticketVariant to 1`() = runTest {
+        val dbFile = File(context.cacheDir, "migration_v4_to_v5_test.db").apply { delete() }
+        val helper = androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory().create(
+            androidx.sqlite.db.SupportSQLiteOpenHelper.Configuration.builder(context)
+                .name(dbFile.absolutePath)
+                .callback(object : androidx.sqlite.db.SupportSQLiteOpenHelper.Callback(4) {
+                    override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                        db.execSQL("CREATE TABLE IF NOT EXISTS clients (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, name TEXT NOT NULL, phone TEXT NOT NULL, address TEXT NOT NULL, specialPricePerKg REAL, creditTermDays INTEGER, createdAtMillis INTEGER NOT NULL)")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS egg_purchases (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, purchaseDateMillis INTEGER NOT NULL, boxes REAL NOT NULL, brand TEXT NOT NULL, grossWeightKg REAL NOT NULL, createdAtMillis INTEGER NOT NULL)")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS inventory_brands (brand TEXT PRIMARY KEY NOT NULL, availableBoxes REAL NOT NULL, deliveredBoxes REAL NOT NULL)")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS deliveries (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, folio TEXT NOT NULL, clientId INTEGER NOT NULL, clientName TEXT NOT NULL, dateMillis INTEGER NOT NULL, modality TEXT NOT NULL, brand TEXT NOT NULL, boxes REAL NOT NULL, grossWeightKg REAL NOT NULL, tareDeductionKg REAL NOT NULL, netWeightKg REAL NOT NULL, pricePerKg REAL NOT NULL, rawAmountMxn REAL NOT NULL, finalAmountMxn REAL NOT NULL, paymentMethod TEXT NOT NULL, initialPaymentMxn REAL NOT NULL, pendingBalanceMxn REAL NOT NULL, previousDebtSnapshotMxn REAL NOT NULL, totalAccumulatedDebtSnapshotMxn REAL NOT NULL, signaturePath TEXT, status TEXT NOT NULL, cancelledAtMillis INTEGER, cancellationReason TEXT, itemsSnapshotJson TEXT NOT NULL DEFAULT '[]', sugarSacks REAL NOT NULL DEFAULT 0.0, sugarSackWeightKg REAL NOT NULL DEFAULT 0.0, sugarPricePerSackMxn REAL NOT NULL DEFAULT 0.0, sugarSubtotalMxn REAL NOT NULL DEFAULT 0.0)")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS abonos (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, clientId INTEGER NOT NULL, deliveryId INTEGER NOT NULL, deliveryFolio TEXT NOT NULL, amountMxn REAL NOT NULL, dateMillis INTEGER NOT NULL, note TEXT NOT NULL, isCancelled INTEGER NOT NULL)")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS reminders (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, clientId INTEGER NOT NULL, clientName TEXT NOT NULL, deliveryDateMillis INTEGER NOT NULL, boxesNote TEXT NOT NULL, note TEXT NOT NULL, isCompleted INTEGER NOT NULL, completedAtMillis INTEGER, createdAtMillis INTEGER NOT NULL)")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS daily_closings (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, folio TEXT NOT NULL, dateKey TEXT NOT NULL, createdAtMillis INTEGER NOT NULL, totalDeliveries INTEGER NOT NULL, totalBoxesDelivered REAL NOT NULL, totalKgDelivered REAL NOT NULL, cashSalesMxn REAL NOT NULL, creditSalesMxn REAL NOT NULL, abonosReceivedMxn REAL NOT NULL, totalMoneyCollectedMxn REAL NOT NULL, pendingDebtsMxn REAL NOT NULL, clientsServedCount INTEGER NOT NULL, movementsSnapshotJson TEXT NOT NULL, pdfPath TEXT NOT NULL, jsonPath TEXT NOT NULL, hashSignature TEXT NOT NULL)")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS backup_records (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, fileName TEXT NOT NULL, filePath TEXT NOT NULL, format TEXT NOT NULL, sizeBytes INTEGER NOT NULL, createdAtMillis INTEGER NOT NULL)")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS sugar_purchases (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, purchaseDateMillis INTEGER NOT NULL, sacks REAL NOT NULL, totalWeightKg REAL NOT NULL, createdAtMillis INTEGER NOT NULL)")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS sugar_inventory (id INTEGER NOT NULL PRIMARY KEY, availableSacks REAL NOT NULL, deliveredSacks REAL NOT NULL, availableWeightKg REAL NOT NULL, deliveredWeightKg REAL NOT NULL)")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS business_settings (id INTEGER NOT NULL PRIMARY KEY, businessName TEXT NOT NULL, slogan TEXT NOT NULL, phone TEXT NOT NULL, address TEXT NOT NULL, globalPricePerKg REAL NOT NULL, printerType TEXT NOT NULL, printerName TEXT NOT NULL, printerAddress TEXT NOT NULL, nextFolioSequence INTEGER NOT NULL, nextClosingSequence INTEGER NOT NULL, creditTermDays INTEGER NOT NULL DEFAULT 7, creditMoratoriumInterestPercent REAL NOT NULL DEFAULT 0.0, creditPaymentPlace TEXT NOT NULL DEFAULT '', creditLegendExtra TEXT NOT NULL DEFAULT '', creditLegendClosing TEXT NOT NULL DEFAULT 'Válido con firma digital.')")
+                        db.execSQL("INSERT INTO clients (id, name, phone, address, specialPricePerKg, creditTermDays, createdAtMillis) VALUES (1, 'Cliente v4', '5512345678', 'Centro 10', 44.0, 12, 1700000000000)")
+                        db.execSQL("INSERT INTO business_settings (id, businessName, slogan, phone, address, globalPricePerKg, printerType, printerName, printerAddress, nextFolioSequence, nextClosingSequence, creditTermDays) VALUES (1, 'H y H HUEVOS', 'LOS MAS FRESCOS DE LA ZONA', '5599998888', 'Bodega 1', 45.0, 'BLUETOOTH', 'MTP-58', '00:11:22:33:44:55', 77, 12, 10)")
+                    }
+                    override fun onUpgrade(db: androidx.sqlite.db.SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+                })
+                .build(),
+        )
+        helper.writableDatabase.close()
+
+        val upgradedDb = Room.databaseBuilder(context, HyhDatabase::class.java, dbFile.absolutePath)
+            .addMigrations(HyhDatabase.MIGRATION_4_5)
+            .allowMainThreadQueries()
+            .build()
+        val upgradedRepo = HyhRepository(context, upgradedDb)
+
+        val clients = upgradedRepo.observeClients().first()
+        val settings = upgradedRepo.getSettingsOnce()
+        assertEquals(1, clients.size)
+        assertEquals("Cliente v4", clients.first().name)
+        assertEquals(77, settings.nextFolioSequence)
+        assertEquals("MTP-58", settings.printerName)
+        assertEquals(1, settings.ticketVariant)
+
+        upgradedDb.close()
+        dbFile.delete()
+    }
+
+    @Test
+    fun `all 5 ticket variants calibrate ESC POS column widths spacing commands PDF sizes and persist across backup`() = runTest {
+        val clientId = repository.saveClient(
+            name = "Abarrotes La Esquina",
+            phone = "5511223344",
+            address = "Av. Principal #123 Col. Centro",
+            specialPricePerKg = 45.0,
+        )
+        repository.registerPurchase(
+            purchaseDateMillis = System.currentTimeMillis(),
+            boxes = 5.0,
+            brand = "Tehuacán",
+            grossWeightKg = 120.0,
+        )
+        val sig = Bitmap.createBitmap(100, 50, Bitmap.Config.ARGB_8888)
+        val deliveryId = repository.registerDelivery(
+            clientId = clientId,
+            modality = DeliveryModality.CAJA_COMPLETA,
+            brand = "Tehuacán",
+            boxes = 2.0,
+            grossWeightKg = 48.0,
+            tareDeductionKg = 4.0,
+            netWeightKg = 44.0,
+            pricePerKg = 45.0,
+            rawAmountMxn = 1980.0,
+            finalAmountMxn = 1980.0,
+            paymentMethod = PaymentMethod.CREDITO,
+            initialPaymentMxn = 500.0,
+            signatureBitmap = sig,
+        )
+        val delivery = repository.observeDeliveryById(deliveryId).first()!!
+        val client = repository.getClientOnce(clientId)
+        val printerMgr = com.example.system.ThermalPrinterManager(context)
+
+        for (variant in com.example.domain.TicketPrintVariant.entries) {
+            repository.updateTicketVariant(variant.id)
+            val settings = repository.getSettingsOnce()
+            assertEquals(variant.id, settings.ticketVariant)
+
+            // Verify PDF dimensions match variant specification
+            val estHeight = com.example.system.PdfDocumentGenerator.measureTicketHeight(
+                context = context,
+                delivery = delivery,
+                settings = settings,
+                client = client,
+            )
+            assertEquals(variant.pdfHeightPt, estHeight)
+            val bmp = Bitmap.createBitmap(variant.pdfWidthPt, estHeight, Bitmap.Config.ARGB_8888)
+            val drawn = com.example.system.PdfDocumentGenerator.renderTicketToCanvas(
+                context = context,
+                canvas = android.graphics.Canvas(bmp),
+                delivery = delivery,
+                settings = settings,
+                client = client,
+            )
+            assertTrue("Variant ${variant.id} drawn height ($drawn) <= $estHeight", drawn <= estHeight)
+
+            // Verify ESC/POS header emits ESC @, ESC M (Font A/B), and ESC 3 <spacingDots>
+            val bytes = printerMgr.buildEscPosTicketBytes(delivery, settings, client)
+            assertEquals(0x1B.toByte(), bytes[0])
+            assertEquals(0x40.toByte(), bytes[1])
+            assertEquals(0x1B.toByte(), bytes[2])
+            assertEquals(0x4D.toByte(), bytes[3])
+            assertEquals(if (variant.useFontB) 0x01.toByte() else 0x00.toByte(), bytes[4])
+            assertEquals(0x1B.toByte(), bytes[5])
+            assertEquals(0x33.toByte(), bytes[6])
+            assertEquals(variant.escPosLineSpacingDots.toByte(), bytes[7])
+
+            val testBytes = printerMgr.buildTestTicketBytes(settings)
+            val testStr = String(testBytes, Charsets.US_ASCII)
+            assertTrue(testStr.contains("COLUMNAS: ${variant.escPosColumns}"))
+            assertTrue(testStr.contains("1234567890".repeat(5).take(variant.escPosColumns)))
+        }
+
+        // Persist V2 Ultra Compacta across JSON backup & restore
+        repository.updateTicketVariant(2)
+        val backup = repository.exportFullJsonBackup()
+        repository.updateTicketVariant(5)
+        val restoreRes = repository.restoreFromLocalBackup(backup)
+        assertTrue(restoreRes.isSuccess)
+        assertEquals(2, repository.getSettingsOnce().ticketVariant)
+        File(backup.filePath).delete()
     }
 }
