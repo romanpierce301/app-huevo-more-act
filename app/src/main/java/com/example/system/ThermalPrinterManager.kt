@@ -30,6 +30,7 @@ import android.os.Build
 import android.os.Handler
 import androidx.core.content.ContextCompat
 import com.example.R
+import com.example.data.local.entity.AbonoEntity
 import com.example.data.local.entity.BusinessSettingsEntity
 import com.example.data.local.entity.ClientEntity
 import com.example.data.local.entity.DeliveryEntity
@@ -37,6 +38,7 @@ import com.example.data.local.entity.SalesChannel
 import com.example.domain.CalculationEngine
 import com.example.domain.DeliveryModality
 import com.example.domain.PaymentMethod
+import com.example.domain.TicketPrintVariant
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -340,21 +342,44 @@ class ThermalPrinterManager(private val context: Context) {
         }
     }
 
+    suspend fun printAbonoTicket(
+        abono: AbonoEntity,
+        settings: BusinessSettingsEntity,
+        client: ClientEntity? = null,
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val bytes = buildEscPosAbonoTicketBytes(abono, settings, client)
+        when (settings.printerType) {
+            "USB" -> printViaUsb(settings.printerAddress, bytes)
+            else -> printViaBluetooth(settings.printerAddress, bytes, settings.printerTransport)
+        }
+    }
+
+    fun buildTestTicketBytes(settings: BusinessSettingsEntity): ByteArray {
+        val variant = TicketPrintVariant.fromId(settings.ticketVariant)
+        val cols = variant.escPosColumns
+        val dash = "-".repeat(cols)
+        val out = ByteArrayOutputStream()
+        out.write(byteArrayOf(0x1B, 0x40)) // ESC @ Init
+        out.write(byteArrayOf(0x1B, 0x4D, if (variant.useFontB) 0x01 else 0x00)) // ESC M Font A/B
+        out.write(byteArrayOf(0x1B, 0x33, variant.escPosLineSpacingDots.toByte())) // ESC 3 n
+        out.write(byteArrayOf(0x1B, 0x61, 0x01)) // Center
+        out.write(byteArrayOf(0x1B, 0x45, 0x01)) // Bold ON
+        wrapAsciiLines(settings.businessName, cols).forEach { out.write(asciiLine(it)) }
+        out.write(byteArrayOf(0x1B, 0x45, 0x00)) // Bold OFF
+        wrapAsciiLines(settings.slogan, cols).forEach { out.write(asciiLine(it)) }
+        out.write(asciiLine(dash))
+        out.write(asciiLine("PRUEBA DE IMPRESION ${variant.widthMm}MM"))
+        out.write(asciiLine("VARIANTE V${variant.id} • COLUMNAS: $cols"))
+        out.write(asciiLine("1234567890".repeat(5).take(cols)))
+        out.write(asciiLine("CONEXION VERIFICADA"))
+        out.write(asciiLine(dash))
+        repeat(variant.trailingFeedLines.coerceAtLeast(1)) { out.write(0x0A) }
+        return out.toByteArray()
+    }
+
     suspend fun printTestTicket(settings: BusinessSettingsEntity): Result<String> =
         withContext(Dispatchers.IO) {
-            val out = ByteArrayOutputStream()
-            out.write(byteArrayOf(0x1B, 0x40)) // ESC @ Init
-            out.write(byteArrayOf(0x1B, 0x61, 0x01)) // Center
-            out.write(byteArrayOf(0x1B, 0x45, 0x01)) // Bold ON
-            out.write(asciiLine(settings.businessName))
-            out.write(byteArrayOf(0x1B, 0x45, 0x00)) // Bold OFF
-            out.write(asciiLine(settings.slogan))
-            out.write(asciiLine("--------------------------------------"))
-            out.write(asciiLine("PRUEBA DE IMPRESION 60MM"))
-            out.write(asciiLine("CONEXION VERIFICADA"))
-            out.write(asciiLine("--------------------------------------"))
-            out.write(byteArrayOf(0x0A, 0x0A, 0x0A))
-            val bytes = out.toByteArray()
+            val bytes = buildTestTicketBytes(settings)
             when (settings.printerType) {
                 "USB" -> printViaUsb(settings.printerAddress, bytes)
                 else -> printViaBluetooth(settings.printerAddress, bytes, settings.printerTransport)
@@ -625,6 +650,11 @@ class ThermalPrinterManager(private val context: Context) {
         settings: BusinessSettingsEntity,
         client: ClientEntity? = null,
     ): ByteArray {
+        val variant = TicketPrintVariant.fromId(settings.ticketVariant)
+        val cols = variant.escPosColumns
+        val sepEq = "=".repeat(cols)
+        val sepDash = "-".repeat(cols)
+
         val out = ByteArrayOutputStream()
         val dateFmt = SimpleDateFormat("dd 'de' MMMM, yyyy", Locale("es", "MX"))
         val timeFmt = SimpleDateFormat("hh:mm a", Locale.US)
@@ -671,134 +701,135 @@ class ThermalPrinterManager(private val context: Context) {
         }
 
         out.write(byteArrayOf(0x1B, 0x40)) // Init
+        out.write(byteArrayOf(0x1B, 0x4D, if (variant.useFontB) 0x01 else 0x00)) // Font A / B
+        out.write(byteArrayOf(0x1B, 0x33, variant.escPosLineSpacingDots.toByte())) // Compact line spacing
         out.write(byteArrayOf(0x1B, 0x61, 0x01)) // Center
 
-        // Logo térmico 1-bit de 432 dots (formato 60mm)
         BitmapFactory.decodeResource(context.resources, R.drawable.img_ticket_logo)?.let { bmp ->
-            out.write(bitmapToEscPosRaster(bmp, maxWidthPx = 432))
+            out.write(bitmapToEscPosRaster(bmp, maxWidthPx = variant.escPosLogoWidthPx))
         }
 
         if (settings.address.isNotBlank()) {
-            wrapAsciiLines(settings.address).forEach { out.write(asciiLine(it)) }
+            wrapAsciiLines(settings.address, cols).forEach { out.write(asciiLine(it)) }
         }
         if (settings.phone.isNotBlank()) out.write(asciiLine("Tel: ${settings.phone}"))
-        out.write(asciiLine("======================================"))
+        out.write(asciiLine(sepEq))
 
         if (isCancelled) {
             out.write(byteArrayOf(0x1B, 0x45, 0x01))
-            out.write(byteArrayOf(0x1D, 0x21, 0x11)) // Double width & height
+            out.write(byteArrayOf(0x1D, 0x21, 0x11))
             out.write(asciiLine("CANCELADO"))
             out.write(byteArrayOf(0x1D, 0x21, 0x00))
             out.write(byteArrayOf(0x1B, 0x45, 0x00))
-            out.write(asciiLine("--------------------------------------"))
+            out.write(asciiLine(sepDash))
         }
 
         out.write(byteArrayOf(0x1B, 0x45, 0x01))
         out.write(asciiLine("COMPROBANTE DE REMISION"))
         if (delivery.salesChannel == SalesChannel.CREMERIA) out.write(asciiLine("VENTA PARA CREMERIA DEL PATRON"))
-        out.write(byteArrayOf(0x1D, 0x21, 0x01)) // Double height folio
+        out.write(byteArrayOf(0x1D, 0x21, 0x01))
         out.write(asciiLine(delivery.folio))
         out.write(byteArrayOf(0x1D, 0x21, 0x00))
         out.write(byteArrayOf(0x1B, 0x45, 0x00))
 
         out.write(byteArrayOf(0x1B, 0x61, 0x00)) // Left
-        out.write(pairLine("Fecha:", dateFmt.format(Date(delivery.dateMillis))))
-        out.write(pairLine("Hora:", timeFmt.format(Date(delivery.dateMillis))))
+        out.write(pairLine("Fecha:", dateFmt.format(Date(delivery.dateMillis)), cols))
+        out.write(pairLine("Hora:", timeFmt.format(Date(delivery.dateMillis)), cols))
         out.write(byteArrayOf(0x1B, 0x61, 0x01)) // Center
         out.write(byteArrayOf(0x1B, 0x45, 0x01))
-        wrapAsciiLines(statusText).forEach { out.write(asciiLine(it)) }
+        wrapAsciiLines(statusText, cols).forEach { out.write(asciiLine(it)) }
         out.write(byteArrayOf(0x1B, 0x45, 0x00))
         out.write(byteArrayOf(0x1B, 0x61, 0x00)) // Left
-        out.write(asciiLine("--------------------------------------"))
+        out.write(asciiLine(sepDash))
 
         out.write(byteArrayOf(0x1B, 0x45, 0x01))
         out.write(asciiLine("CLIENTE"))
-        wrapAsciiLines(delivery.clientName).forEach { out.write(asciiLine(it)) }
+        wrapAsciiLines(delivery.clientName, cols).forEach { out.write(asciiLine(it)) }
         out.write(byteArrayOf(0x1B, 0x45, 0x00))
         if (!client?.address.isNullOrBlank()) {
-            wrapAsciiLines(client?.address.orEmpty()).forEach { out.write(asciiLine(it)) }
+            wrapAsciiLines(client?.address.orEmpty(), cols).forEach { out.write(asciiLine(it)) }
         }
         if (!client?.phone.isNullOrBlank()) {
             out.write(asciiLine("Tel: ${client?.phone.orEmpty()}"))
         }
 
-        out.write(asciiLine("--------------------------------------"))
+        out.write(asciiLine(sepDash))
         val productHeader = when {
             hasEggs && hasSugar -> "$headerBrandSummary - $modalityLabel + Azucar"
             hasSugar -> "Azucar (Bultos)"
             else -> "$headerBrandSummary - $modalityLabel"
         }
-        wrapAsciiLines(productHeader).forEach { out.write(asciiLine(it)) }
+        wrapAsciiLines(productHeader, cols).forEach { out.write(asciiLine(it)) }
 
         brandBreakdown.forEach { b ->
             val leftPart = "${b.brand.take(12)} ${CalculationEngine.formatExactWeight(b.netWeightKg)}kg x ${CalculationEngine.formatMoney(b.pricePerKg)}"
             val rightSub = CalculationEngine.formatMoney(b.subtotalMxn.setScale(2, RoundingMode.HALF_UP))
-            if (normalizeAscii(leftPart).length + 1 + normalizeAscii(rightSub).length <= LINE_WIDTH_CHARS) {
-                out.write(pairLine(leftPart, rightSub))
+            if (normalizeAscii(leftPart).length + 1 + normalizeAscii(rightSub).length <= cols) {
+                out.write(pairLine(leftPart, rightSub, cols))
             } else {
-                wrapAsciiLines(b.brand).forEach { out.write(asciiLine(it)) }
+                wrapAsciiLines(b.brand, cols).forEach { out.write(asciiLine(it)) }
                 val detailLeft = "${CalculationEngine.formatExactWeight(b.netWeightKg)}kg x ${CalculationEngine.formatMoney(b.pricePerKg)}/kg"
-                out.write(pairLine(detailLeft, rightSub))
+                out.write(pairLine(detailLeft, rightSub, cols))
             }
         }
         if (hasSugar) {
             val sLeft = "Azucar ${CalculationEngine.formatExactBoxes(delivery.sugarSacks)}bto x ${CalculationEngine.formatExactWeight(delivery.sugarSackWeightKg)}kg"
             val sRight = CalculationEngine.formatMoney(delivery.sugarSubtotalMxn)
-            if (normalizeAscii(sLeft).length + 1 + normalizeAscii(sRight).length <= LINE_WIDTH_CHARS) {
-                out.write(pairLine(sLeft, sRight))
+            if (normalizeAscii(sLeft).length + 1 + normalizeAscii(sRight).length <= cols) {
+                out.write(pairLine(sLeft, sRight, cols))
             } else {
                 out.write(asciiLine("Azucar (${CalculationEngine.formatExactBoxes(delivery.sugarSacks)} bto)"))
-                out.write(pairLine("${CalculationEngine.formatExactWeight(delivery.sugarSackWeightKg)}kg x ${CalculationEngine.formatMoney(delivery.sugarPricePerSackMxn)}/bto", sRight))
+                out.write(pairLine("${CalculationEngine.formatExactWeight(delivery.sugarSackWeightKg)}kg x ${CalculationEngine.formatMoney(delivery.sugarPricePerSackMxn)}/bto", sRight, cols))
             }
         }
 
-        out.write(asciiLine("======================================"))
+        out.write(asciiLine(sepEq))
         out.write(byteArrayOf(0x1B, 0x45, 0x01))
-        out.write(pairLine("KILOS NETOS", "${CalculationEngine.formatExactWeight(totalNetWeightKg)} kg"))
+        out.write(pairLine("KILOS NETOS", "${CalculationEngine.formatExactWeight(totalNetWeightKg)} kg", cols))
         out.write(byteArrayOf(0x1B, 0x45, 0x00))
-        out.write(asciiLine("======================================"))
+        out.write(asciiLine(sepEq))
 
-        out.write(pairLine("Subtotal:", CalculationEngine.formatMoney(rawSubtotal)))
+        out.write(pairLine("Subtotal:", CalculationEngine.formatMoney(rawSubtotal), cols))
         if (roundingDiff.compareTo(BigDecimal.ZERO) != 0) {
             val sign = if (roundingDiff > BigDecimal.ZERO) "+" else "-"
-            out.write(pairLine("Redondeo:", "$sign${CalculationEngine.formatMoney(roundingDiff.abs())}"))
+            out.write(pairLine("Redondeo:", "$sign${CalculationEngine.formatMoney(roundingDiff.abs())}", cols))
         }
-        out.write(asciiLine("--------------------------------------"))
+        out.write(asciiLine(sepDash))
 
         out.write(byteArrayOf(0x1B, 0x45, 0x01))
-        out.write(pairLine("TOTAL", "${CalculationEngine.formatMoney(delivery.finalAmountMxn)} MXN"))
-        wrapAsciiLines(CalculationEngine.amountInWordsMxn(delivery.finalAmountMxn)).forEach {
+        out.write(pairLine("TOTAL", "${CalculationEngine.formatMoney(delivery.finalAmountMxn)} MXN", cols))
+        wrapAsciiLines(CalculationEngine.amountInWordsMxn(delivery.finalAmountMxn), cols).forEach {
             out.write(asciiLine(it))
         }
         out.write(byteArrayOf(0x1B, 0x45, 0x00))
-        out.write(asciiLine("--------------------------------------"))
+        out.write(asciiLine(sepDash))
 
         val payLabel = PaymentMethod.fromDb(delivery.paymentMethod).label
-        out.write(pairLine("Pagado / Abono:", "${CalculationEngine.formatMoney(effectivePaidMxn)} MXN"))
+        out.write(pairLine("Pagado / Abono:", "${CalculationEngine.formatMoney(effectivePaidMxn)} MXN", cols))
         out.write(asciiLine("Forma pago: $payLabel"))
 
-        // Barra invertida ESC/POS (GS B 1 / GS B 0)
         out.write(byteArrayOf(0x1B, 0x45, 0x01))
         out.write(byteArrayOf(0x1D, 0x42, 0x01))
         out.write(
             pairLine(
                 if (delivery.pendingBalanceMxn > 0.0) "RESTA ENTREGA" else "LIQUIDADO",
                 "${CalculationEngine.formatMoney(delivery.pendingBalanceMxn)} MXN",
+                cols,
             ),
         )
         out.write(byteArrayOf(0x1D, 0x42, 0x00))
         out.write(byteArrayOf(0x1B, 0x45, 0x00))
 
-        out.write(asciiLine("--------------------------------------"))
+        out.write(asciiLine(sepDash))
         out.write(byteArrayOf(0x1B, 0x45, 0x01))
-        out.write(pairLine("Saldo anterior:", "${CalculationEngine.formatMoney(delivery.previousDebtSnapshotMxn)} MXN"))
-        out.write(pairLine("Esta remision:", "+${CalculationEngine.formatMoney(delivery.pendingBalanceMxn)} MXN"))
+        out.write(pairLine("Saldo anterior:", "${CalculationEngine.formatMoney(delivery.previousDebtSnapshotMxn)} MXN", cols))
+        out.write(pairLine("Esta remision:", "+${CalculationEngine.formatMoney(delivery.pendingBalanceMxn)} MXN", cols))
         val totalDebt = delivery.previousDebtSnapshotMxn + delivery.pendingBalanceMxn
-        out.write(pairLine("SALDO TOTAL", "${CalculationEngine.formatMoney(totalDebt)} MXN"))
+        out.write(pairLine("SALDO TOTAL", "${CalculationEngine.formatMoney(totalDebt)} MXN", cols))
         out.write(byteArrayOf(0x1B, 0x45, 0x00))
 
         if (isCredit) {
-            out.write(asciiLine("--------------------------------------"))
+            out.write(asciiLine(sepDash))
             val legend = when {
                 isCancelled -> "Nota cancelada. Las obligaciones de pago y entrega correspondientes fueron revertidas."
                 delivery.pendingBalanceMxn > 0.0 ->
@@ -816,31 +847,147 @@ class ThermalPrinterManager(private val context: Context) {
                     "Recibi la mercancia descrita en esta remision a mi entera satisfaccion y cubri el importe total senalado. Acepto mi firma digitalizada como constancia de recepcion."
             }
             out.write(byteArrayOf(0x1B, 0x61, 0x00)) // Left
-            wrapAsciiLines(legend).forEach { out.write(asciiLine(it)) }
+            wrapAsciiLines(legend, cols).forEach { out.write(asciiLine(it)) }
             out.write(byteArrayOf(0x1B, 0x61, 0x01)) // Center
             delivery.signaturePath?.let { path ->
                 val sigFile = File(path)
                 if (sigFile.exists()) {
                     BitmapFactory.decodeFile(sigFile.absolutePath)?.let { sigBmp ->
-                        out.write(bitmapToEscPosRaster(sigBmp, maxWidthPx = 360))
+                        out.write(bitmapToEscPosRaster(sigBmp, maxWidthPx = variant.escPosSignatureWidthPx))
                     }
                 }
             }
             out.write(asciiLine("Recibi de conformidad"))
             out.write(byteArrayOf(0x1B, 0x45, 0x01))
-            wrapAsciiLines(delivery.clientName).forEach { out.write(asciiLine(it)) }
+            wrapAsciiLines(delivery.clientName, cols).forEach { out.write(asciiLine(it)) }
             out.write(byteArrayOf(0x1B, 0x45, 0x00))
         }
 
         out.write(byteArrayOf(0x1B, 0x61, 0x01)) // Center
-        out.write(asciiLine("--------------------------------------"))
+        out.write(asciiLine(sepDash))
         out.write(byteArrayOf(0x1B, 0x45, 0x01))
         out.write(asciiLine("!Gracias por su preferencia!"))
         out.write(byteArrayOf(0x1B, 0x45, 0x00))
         out.write(asciiLine("Calidad y frescura en cada huevo"))
 
-        out.write(byteArrayOf(0x0A, 0x0A, 0x0A))
+        repeat(variant.trailingFeedLines.coerceAtLeast(1)) { out.write(0x0A) }
         out.write(byteArrayOf(0x1D, 0x56, 0x41, 0x00)) // Cut if supported
+        return out.toByteArray()
+    }
+
+    fun buildEscPosAbonoTicketBytes(
+        abono: AbonoEntity,
+        settings: BusinessSettingsEntity,
+        client: ClientEntity? = null,
+    ): ByteArray {
+        val variant = TicketPrintVariant.fromId(settings.ticketVariant)
+        val cols = variant.escPosColumns
+        val sepEq = "=".repeat(cols)
+        val sepDash = "-".repeat(cols)
+
+        val out = ByteArrayOutputStream()
+        val dateFmt = SimpleDateFormat("dd 'de' MMMM, yyyy", Locale("es", "MX"))
+        val timeFmt = SimpleDateFormat("hh:mm a", Locale.US)
+        val resolvedClientName = abono.clientName.ifBlank { client?.name ?: "Cliente" }
+        val resolvedFolio = abono.abonoFolio.ifBlank { "AB-${abono.id}" }
+        val isSettled = abono.remainingTotalDebtMxn <= 0.0
+        val statusText = when {
+            abono.isCancelled -> "CANCELADO"
+            isSettled -> "CUENTA LIQUIDADA"
+            else -> "ABONO PARCIAL A CREDITO"
+        }
+
+        out.write(byteArrayOf(0x1B, 0x40)) // Init
+        out.write(byteArrayOf(0x1B, 0x4D, if (variant.useFontB) 0x01 else 0x00)) // Font A / B
+        out.write(byteArrayOf(0x1B, 0x33, variant.escPosLineSpacingDots.toByte())) // Line spacing
+        out.write(byteArrayOf(0x1B, 0x61, 0x01)) // Center
+
+        BitmapFactory.decodeResource(context.resources, R.drawable.img_ticket_logo)?.let { bmp ->
+            out.write(bitmapToEscPosRaster(bmp, maxWidthPx = variant.escPosLogoWidthPx))
+        }
+
+        if (settings.address.isNotBlank()) {
+            wrapAsciiLines(settings.address, cols).forEach { out.write(asciiLine(it)) }
+        }
+        if (settings.phone.isNotBlank()) out.write(asciiLine("Tel: ${settings.phone}"))
+        out.write(asciiLine(sepEq))
+
+        if (abono.isCancelled) {
+            out.write(byteArrayOf(0x1B, 0x45, 0x01))
+            out.write(byteArrayOf(0x1D, 0x21, 0x11))
+            out.write(asciiLine("CANCELADO"))
+            out.write(byteArrayOf(0x1D, 0x21, 0x00))
+            out.write(byteArrayOf(0x1B, 0x45, 0x00))
+            out.write(asciiLine(sepDash))
+        }
+
+        out.write(byteArrayOf(0x1B, 0x45, 0x01))
+        out.write(asciiLine("COMPROBANTE DE ABONO"))
+        if (abono.salesChannel == SalesChannel.CREMERIA) out.write(asciiLine("CREMERIA DEL PATRON"))
+        out.write(byteArrayOf(0x1D, 0x21, 0x01))
+        out.write(asciiLine(resolvedFolio))
+        out.write(byteArrayOf(0x1D, 0x21, 0x00))
+        out.write(byteArrayOf(0x1B, 0x45, 0x00))
+
+        out.write(byteArrayOf(0x1B, 0x61, 0x00)) // Left
+        out.write(pairLine("Fecha:", dateFmt.format(Date(abono.dateMillis)), cols))
+        out.write(pairLine("Hora:", timeFmt.format(Date(abono.dateMillis)), cols))
+        out.write(byteArrayOf(0x1B, 0x61, 0x01)) // Center
+        out.write(byteArrayOf(0x1B, 0x45, 0x01))
+        wrapAsciiLines(statusText, cols).forEach { out.write(asciiLine(it)) }
+        out.write(byteArrayOf(0x1B, 0x45, 0x00))
+        out.write(byteArrayOf(0x1B, 0x61, 0x00)) // Left
+        out.write(asciiLine(sepDash))
+
+        out.write(byteArrayOf(0x1B, 0x45, 0x01))
+        out.write(asciiLine("CLIENTE"))
+        wrapAsciiLines(resolvedClientName, cols).forEach { out.write(asciiLine(it)) }
+        out.write(byteArrayOf(0x1B, 0x45, 0x00))
+        if (!client?.address.isNullOrBlank()) {
+            wrapAsciiLines(client?.address.orEmpty(), cols).forEach { out.write(asciiLine(it)) }
+        }
+        if (!client?.phone.isNullOrBlank()) {
+            out.write(asciiLine("Tel: ${client?.phone.orEmpty()}"))
+        }
+
+        out.write(asciiLine(sepDash))
+        out.write(byteArrayOf(0x1B, 0x45, 0x01))
+        out.write(asciiLine("DETALLE DEL ABONO"))
+        out.write(byteArrayOf(0x1B, 0x45, 0x00))
+        wrapAsciiLines("Nota(s): ${abono.deliveryFolio}", cols).forEach { out.write(asciiLine(it)) }
+        if (abono.note.isNotBlank()) {
+            wrapAsciiLines("Obs: ${abono.note}", cols).forEach { out.write(asciiLine(it)) }
+        }
+
+        out.write(asciiLine(sepEq))
+        out.write(byteArrayOf(0x1B, 0x45, 0x01))
+        out.write(pairLine("Adeudo anterior:", "${CalculationEngine.formatMoney(abono.previousTotalDebtMxn)} MXN", cols))
+        out.write(pairLine("Abono realizado:", "-${CalculationEngine.formatMoney(abono.amountMxn)} MXN", cols))
+        out.write(byteArrayOf(0x1D, 0x42, 0x01))
+        out.write(
+            pairLine(
+                if (isSettled) "SALDO LIQUIDADO" else "ADEUDO ACTUAL",
+                "${CalculationEngine.formatMoney(abono.remainingTotalDebtMxn)} MXN",
+                cols,
+            ),
+        )
+        out.write(byteArrayOf(0x1D, 0x42, 0x00))
+        out.write(byteArrayOf(0x1B, 0x45, 0x00))
+        out.write(asciiLine(sepEq))
+
+        wrapAsciiLines("Abono: ${CalculationEngine.amountInWordsMxn(abono.amountMxn)}", cols).forEach {
+            out.write(asciiLine(it))
+        }
+
+        out.write(byteArrayOf(0x1B, 0x61, 0x01)) // Center
+        out.write(asciiLine(sepDash))
+        out.write(byteArrayOf(0x1B, 0x45, 0x01))
+        out.write(asciiLine("!Gracias por su pago!"))
+        out.write(byteArrayOf(0x1B, 0x45, 0x00))
+        out.write(asciiLine("Comprobante de abono parcial"))
+
+        repeat(variant.trailingFeedLines.coerceAtLeast(1)) { out.write(0x0A) }
+        out.write(byteArrayOf(0x1D, 0x56, 0x41, 0x00))
         return out.toByteArray()
     }
 
@@ -863,10 +1010,10 @@ class ThermalPrinterManager(private val context: Context) {
         return lines
     }
 
-    private fun pairLine(left: String, right: String): ByteArray {
+    private fun pairLine(left: String, right: String, maxCols: Int = LINE_WIDTH_CHARS): ByteArray {
         val cleanLeft = normalizeAscii(left)
         val cleanRight = normalizeAscii(right)
-        val spaces = (LINE_WIDTH_CHARS - cleanLeft.length - cleanRight.length).coerceAtLeast(1)
+        val spaces = (maxCols - cleanLeft.length - cleanRight.length).coerceAtLeast(1)
         return (cleanLeft + " ".repeat(spaces) + cleanRight + "\n").toByteArray(Charsets.US_ASCII)
     }
 

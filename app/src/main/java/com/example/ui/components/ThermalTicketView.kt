@@ -37,6 +37,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.data.local.entity.AbonoEntity
 import com.example.data.local.entity.BusinessSettingsEntity
 import com.example.data.local.entity.ClientEntity
 import com.example.data.local.entity.DeliveryEntity
@@ -44,6 +45,7 @@ import com.example.data.local.entity.SalesChannel
 import com.example.domain.CalculationEngine
 import com.example.domain.DeliveryModality
 import com.example.domain.PaymentMethod
+import com.example.domain.TicketPrintVariant
 import com.example.ui.theme.SpaceMonoFontFamily
 import com.example.BuildConfig
 import com.example.ui.theme.ThermalAlertRed
@@ -121,10 +123,11 @@ fun ThermalTicket60mmView(
         else -> "LIQUIDADO"
     }
 
+    val activeVariant = TicketPrintVariant.fromId(settings.ticketVariant)
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .widthIn(max = 360.dp)
+            .widthIn(max = activeVariant.previewMaxWidthDp.dp)
             .testTag("thermal_ticket_preview"),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -143,7 +146,7 @@ fun ThermalTicket60mmView(
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 110.dp),
+                    .heightIn(max = activeVariant.previewLogoMaxHeightDp.dp),
             )
 
             Spacer(Modifier.height(6.dp))
@@ -571,6 +574,281 @@ fun ThermalTicket60mmView(
             )
             Text(
                 text = "Calidad y frescura en cada huevo",
+                fontFamily = SpaceMonoFontFamily,
+                fontSize = 9.sp,
+                color = ThermalInkMuted,
+                textAlign = TextAlign.Center,
+            )
+        }
+        SerratedEdge(isTop = false)
+    }
+}
+
+@Composable
+fun ThermalAbonoTicketView(
+    abono: AbonoEntity,
+    client: ClientEntity?,
+    settings: BusinessSettingsEntity,
+    modifier: Modifier = Modifier,
+) {
+    val activeVariant = TicketPrintVariant.fromId(settings.ticketVariant)
+    val dateFmt = SimpleDateFormat("dd 'de' MMMM, yyyy", Locale("es", "MX"))
+    val timeFmt = SimpleDateFormat("hh:mm a", Locale.US)
+    val resolvedClientName = abono.clientName.ifBlank { client?.name ?: "Cliente" }
+    val resolvedFolio = abono.abonoFolio.ifBlank { "AB-${abono.id}" }
+    val isSettled = abono.remainingTotalDebtMxn <= 0.0
+    val statusText = when {
+        abono.isCancelled -> "CANCELADO"
+        isSettled -> "CUENTA LIQUIDADA"
+        else -> "ABONO PARCIAL A CRÉDITO"
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .widthIn(max = activeVariant.previewMaxWidthDp.dp)
+            .testTag("thermal_abono_ticket_preview"),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        SerratedEdge(isTop = true)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(ThermalPaper)
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Image(
+                painter = painterResource(R.drawable.img_ticket_logo),
+                contentDescription = "Logotipo térmico ${BuildConfig.BRAND_APP_NAME}",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = activeVariant.previewLogoMaxHeightDp.dp),
+            )
+
+            Spacer(Modifier.height(6.dp))
+            if (settings.address.isNotBlank()) {
+                Text(
+                    text = settings.address,
+                    fontFamily = SpaceMonoFontFamily,
+                    fontSize = 9.5.sp,
+                    color = ThermalInkDark,
+                    textAlign = TextAlign.Center,
+                )
+            }
+            if (settings.phone.isNotBlank()) {
+                Text(
+                    text = "Tel: ${settings.phone}",
+                    fontFamily = SpaceMonoFontFamily,
+                    fontSize = 9.5.sp,
+                    color = ThermalInkDark,
+                    textAlign = TextAlign.Center,
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+            HorizontalDivider(color = ThermalInkDark, thickness = 2.dp)
+            Spacer(Modifier.height(8.dp))
+
+            if (abono.isCancelled) {
+                Surface(
+                    color = ThermalAlertRed.copy(alpha = 0.12f),
+                    border = BorderStroke(2.dp, ThermalAlertRed),
+                    shape = RoundedCornerShape(4.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = "CANCELADO",
+                        fontFamily = SpaceMonoFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp,
+                        color = ThermalAlertRed,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(vertical = 5.dp),
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+
+            Text(
+                text = "COMPROBANTE DE ABONO",
+                fontFamily = SpaceMonoFontFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 11.5.sp,
+                color = ThermalInkDark,
+                textAlign = TextAlign.Center,
+            )
+            if (abono.salesChannel == SalesChannel.CREMERIA) {
+                Text(
+                    text = "CREMERÍA DEL PATRÓN",
+                    fontFamily = SpaceMonoFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 9.sp,
+                    color = ThermalInkDark,
+                    textAlign = TextAlign.Center,
+                )
+            }
+            Text(
+                text = resolvedFolio,
+                fontFamily = SpaceMonoFontFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                color = ThermalInkDark,
+                textAlign = TextAlign.Center,
+            )
+
+            Spacer(Modifier.height(6.dp))
+            TicketPairRow("Fecha:", dateFmt.format(Date(abono.dateMillis)), boldValue = true)
+            TicketPairRow("Hora:", timeFmt.format(Date(abono.dateMillis)), boldValue = true)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = statusText,
+                fontFamily = SpaceMonoFontFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 9.5.sp,
+                color = when {
+                    abono.isCancelled -> ThermalAlertRed
+                    isSettled -> ThermalInkDark
+                    else -> ThermalInkDark
+                },
+                textAlign = TextAlign.Center,
+            )
+
+            Spacer(Modifier.height(8.dp))
+            DashedTicketDivider()
+            Spacer(Modifier.height(8.dp))
+
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "CLIENTE",
+                    fontFamily = SpaceMonoFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 10.sp,
+                    color = ThermalInkDark,
+                )
+                Text(
+                    text = resolvedClientName,
+                    fontFamily = SpaceMonoFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    color = ThermalInkDark,
+                )
+                if (!client?.address.isNullOrBlank()) {
+                    Text(
+                        text = client?.address.orEmpty(),
+                        fontFamily = SpaceMonoFontFamily,
+                        fontSize = 9.5.sp,
+                        color = ThermalInk,
+                    )
+                }
+                if (!client?.phone.isNullOrBlank()) {
+                    Text(
+                        text = "Tel: ${client?.phone.orEmpty()}",
+                        fontFamily = SpaceMonoFontFamily,
+                        fontSize = 9.5.sp,
+                        color = ThermalInk,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            DashedTicketDivider()
+            Spacer(Modifier.height(8.dp))
+
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "DETALLE DEL ABONO",
+                    fontFamily = SpaceMonoFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 10.sp,
+                    color = ThermalInkDark,
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    text = "Nota(s) aplicada(s): ${abono.deliveryFolio}",
+                    fontFamily = SpaceMonoFontFamily,
+                    fontSize = 9.5.sp,
+                    color = ThermalInkDark,
+                )
+                if (abono.note.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = "Observación: ${abono.note}",
+                        fontFamily = SpaceMonoFontFamily,
+                        fontSize = 9.5.sp,
+                        color = ThermalInk,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            HorizontalDivider(color = ThermalInkDark, thickness = 2.dp)
+            Spacer(Modifier.height(6.dp))
+
+            TicketPairRow(
+                label = "Adeudo anterior:",
+                value = "${CalculationEngine.formatMoney(abono.previousTotalDebtMxn)} MXN",
+                boldValue = true,
+            )
+            TicketPairRow(
+                label = "Abono realizado:",
+                value = "-${CalculationEngine.formatMoney(abono.amountMxn)} MXN",
+                boldLabel = true,
+                boldValue = true,
+            )
+
+            Spacer(Modifier.height(6.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(ThermalInkDark)
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = if (isSettled) "SALDO LIQUIDADO" else "ADEUDO ACTUAL",
+                        fontFamily = SpaceMonoFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp,
+                        color = Color.White,
+                    )
+                    Text(
+                        text = "${CalculationEngine.formatMoney(abono.remainingTotalDebtMxn)} MXN",
+                        fontFamily = SpaceMonoFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp,
+                        color = Color.White,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "Abonó: ${CalculationEngine.amountInWordsMxn(abono.amountMxn)}",
+                fontFamily = SpaceMonoFontFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 9.sp,
+                color = ThermalInkDark,
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            Spacer(Modifier.height(10.dp))
+            DashedTicketDivider()
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "¡Gracias por su pago!",
+                fontFamily = SpaceMonoFontFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 10.sp,
+                color = ThermalInkDark,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                text = "Comprobante de abono parcial",
                 fontFamily = SpaceMonoFontFamily,
                 fontSize = 9.sp,
                 color = ThermalInkMuted,

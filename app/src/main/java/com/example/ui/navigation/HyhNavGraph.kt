@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.ReceiptLong
@@ -83,6 +84,8 @@ import com.example.ui.components.AuroraBackground
 import com.example.ui.components.AuroraConfirmationDialog
 import com.example.ui.components.AuroraStatusBadge
 import com.example.ui.components.OverlayHost
+import com.example.ui.screens.AbonoTicketScreen
+import com.example.ui.screens.AbonosScreen
 import com.example.ui.screens.BienvenidaScreen
 import com.example.ui.screens.CierresDiariosScreen
 import com.example.ui.screens.ClientesScreen
@@ -122,6 +125,8 @@ object HyhRoutes {
     const val FIRMA_DIGITAL = "firma_digital"
     const val TICKET = "ticket/{deliveryId}"
     const val ENTREGAS_REALIZADAS = "entregas_realizadas"
+    const val ABONOS = "abonos"
+    const val TICKET_ABONO = "ticket_abono/{abonoId}"
     const val COMPRAS_HUEVO = "compras_huevo"
     const val INVENTARIO = "inventario"
     const val RECORDATORIOS = "recordatorios"
@@ -135,12 +140,15 @@ object HyhRoutes {
     const val CREMERIA_PAGO = "cremeria_pago"
     const val CREMERIA_FIRMA_DIGITAL = "cremeria_firma_digital"
     const val CREMERIA_TICKET = "cremeria_ticket/{deliveryId}"
+    const val CREMERIA_TICKET_ABONO = "cremeria_ticket_abono/{abonoId}"
     const val CREMERIA_PERFIL_CLIENTE = "cremeria_perfil_cliente/{clientId}"
 
     fun perfilCliente(clientId: Long) = "perfil_cliente/$clientId"
     fun ticket(deliveryId: Long) = "ticket/$deliveryId"
+    fun ticketAbono(abonoId: Long) = "ticket_abono/$abonoId"
     fun detalleCierre(closingId: Long) = "detalle_cierre/$closingId"
     fun cremeriaTicket(deliveryId: Long) = "cremeria_ticket/$deliveryId"
+    fun cremeriaTicketAbono(abonoId: Long) = "cremeria_ticket_abono/$abonoId"
     fun cremeriaPerfilCliente(clientId: Long) = "cremeria_perfil_cliente/$clientId"
 }
 
@@ -157,6 +165,7 @@ private val drawerModules = buildList {
         DrawerModuleItem(HyhRoutes.CLIENTES, "Clientes", Icons.Default.People, "drawer_clientes"),
         DrawerModuleItem(HyhRoutes.NUEVA_ENTREGA, "Nueva Entrega", Icons.Default.AddCircleOutline, "drawer_nueva_entrega"),
         DrawerModuleItem(HyhRoutes.ENTREGAS_REALIZADAS, "Entregas Realizadas", Icons.Default.ReceiptLong, "drawer_entregas"),
+        DrawerModuleItem(HyhRoutes.ABONOS, "Abonos a Crédito", Icons.Default.Payments, "drawer_abonos"),
     ))
     if (BuildConfig.FLAVOR == "lili") {
         add(DrawerModuleItem(HyhRoutes.CREMERIA, "Cremería del Patrón", Icons.Default.Store, "drawer_cremeria"))
@@ -434,6 +443,9 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                                         navController.navigate(HyhRoutes.ticket(deliveryId))
                                     }
                                 },
+                                onOpenAbonoTicket = { abonoId ->
+                                    navController.navigate(HyhRoutes.ticketAbono(abonoId))
+                                },
                             )
                         }
 
@@ -547,6 +559,43 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                             )
                         }
 
+                        composable(HyhRoutes.ABONOS) {
+                            BackHandler { navigateToTopModule(HyhRoutes.PANEL_PRINCIPAL) }
+                            AbonosScreen(
+                                clients = clients,
+                                deliveries = deliveries,
+                                activeAbonos = activeAbonos,
+                                onOpenDrawer = { scope.launch { drawerState.open() } },
+                                onRecordAbono = { cid, did, amount, note, onDone ->
+                                    viewModel.recordAbono(cid, did, amount, note, onDone)
+                                },
+                                onOpenAbonoTicket = { abonoId ->
+                                    navController.navigate(HyhRoutes.ticketAbono(abonoId))
+                                },
+                            )
+                        }
+
+                        composable(
+                            route = HyhRoutes.TICKET_ABONO,
+                            arguments = listOf(navArgument("abonoId") { type = NavType.LongType }),
+                        ) { entry ->
+                            val abonoId = entry.arguments?.getLong("abonoId") ?: 0L
+                            val abono = activeAbonos.firstOrNull { it.id == abonoId }
+                            val client = abono?.let { ab ->
+                                clients.firstOrNull { it.client.id == ab.clientId }?.client
+                            }
+                            AbonoTicketScreen(
+                                abono = abono,
+                                client = client,
+                                settings = settings,
+                                onBack = { navController.popBackStack() },
+                                onSelectTicketVariant = viewModel::selectTicketVariant,
+                                onPrint = viewModel::printAbonoTicket,
+                                onShareWhatsApp = viewModel::shareAbonoPdfWhatsApp,
+                                onDownloadPdf = viewModel::downloadAbonoPdf,
+                            )
+                        }
+
                         composable(HyhRoutes.CREMERIA) {
                             BackHandler { navigateToTopModule(HyhRoutes.PANEL_PRINCIPAL) }
                             EntregasRealizadasScreen(
@@ -617,9 +666,37 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                             val id = entry.arguments?.getLong("deliveryId") ?: 0L
                             val delivery = cremeriaDeliveries.firstOrNull { it.id == id }
                             val client = delivery?.let { d -> cremeriaClients.firstOrNull { it.client.id == d.clientId }?.client }
-                            TicketScreen(delivery, client, settings, { navController.popBackStack() }, viewModel::printDeliveryTicket,
-                                viewModel::shareDeliveryPdfWhatsApp, viewModel::downloadDeliveryPdf, viewModel::downloadDeliveryJson,
-                                { deliveryId, reason -> viewModel.cancelDelivery(deliveryId, reason, true) })
+                            TicketScreen(
+                                delivery = delivery,
+                                client = client,
+                                settings = settings,
+                                onBack = { navController.popBackStack() },
+                                onSelectTicketVariant = viewModel::selectTicketVariant,
+                                onPrint = viewModel::printDeliveryTicket,
+                                onShareWhatsApp = viewModel::shareDeliveryPdfWhatsApp,
+                                onDownloadPdf = viewModel::downloadDeliveryPdf,
+                                onDownloadJson = viewModel::downloadDeliveryJson,
+                                onCancelDelivery = { deliveryId, reason -> viewModel.cancelDelivery(deliveryId, reason, true) },
+                            )
+                        }
+
+                        composable(
+                            route = HyhRoutes.CREMERIA_TICKET_ABONO,
+                            arguments = listOf(navArgument("abonoId") { type = NavType.LongType }),
+                        ) { entry ->
+                            val abonoId = entry.arguments?.getLong("abonoId") ?: 0L
+                            val abono = cremeriaAbonos.firstOrNull { it.id == abonoId }
+                            val client = abono?.let { ab -> cremeriaClients.firstOrNull { it.client.id == ab.clientId }?.client }
+                            AbonoTicketScreen(
+                                abono = abono,
+                                client = client,
+                                settings = settings,
+                                onBack = { navController.popBackStack() },
+                                onSelectTicketVariant = viewModel::selectTicketVariant,
+                                onPrint = viewModel::printAbonoTicket,
+                                onShareWhatsApp = viewModel::shareAbonoPdfWhatsApp,
+                                onDownloadPdf = viewModel::downloadAbonoPdf,
+                            )
                         }
 
                         composable(HyhRoutes.CREMERIA_PERFIL_CLIENTE, arguments = listOf(navArgument("clientId") { type = NavType.LongType })) { entry ->
@@ -632,6 +709,7 @@ fun HyhAppRoot(viewModel: HyhViewModel) {
                                 onStartNewDeliveryForClient = { cid -> viewModel.startDeliveryForClient(cid, true); navController.navigate(HyhRoutes.CREMERIA_NUEVA_ENTREGA) },
                                 onRecordAbono = { cid, did, amount, note, done -> viewModel.recordAbono(cid, did, amount, note, done, true) },
                                 onOpenTicket = { did -> viewModel.openTicketWithLoading { navController.navigate(HyhRoutes.cremeriaTicket(did)) } },
+                                onOpenAbonoTicket = { abonoId -> navController.navigate(HyhRoutes.cremeriaTicketAbono(abonoId)) },
                             )
                         }
 

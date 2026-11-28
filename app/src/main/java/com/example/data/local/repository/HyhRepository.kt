@@ -93,6 +93,10 @@ class HyhRepository(
     fun observeAbonosForClient(clientId: Long): Flow<List<AbonoEntity>> =
         dao.observeAbonosForClient(clientId)
 
+    fun observeAbonoById(id: Long): Flow<AbonoEntity?> = dao.observeAbonoById(id)
+
+    suspend fun getAbonoOnce(id: Long): AbonoEntity? = dao.getAbonoById(id)
+
     fun observeReminders(): Flow<List<ReminderEntity>> = dao.observeReminders()
 
     fun observeDailyClosings(): Flow<List<DailyClosingEntity>> = dao.observeDailyClosings()
@@ -572,50 +576,127 @@ class HyhRepository(
 
     suspend fun recordAbono(
         clientId: Long,
-        deliveryId: Long,
+        deliveryId: Long? = null,
         amountMxn: Double,
         note: String,
         salesChannel: String = SalesChannel.PUBLIC,
-    ) {
+    ): Long {
         require(amountMxn.isFinite() && amountMxn > 0.0) { "El abono debe ser mayor a cero" }
-        database.withTransaction {
-            val delivery = if (salesChannel == SalesChannel.CREMERIA) {
-                dao.getCremeriaDeliveryById(deliveryId)
+        return database.withTransaction {
+            val resolvedClientName = if (salesChannel == SalesChannel.CREMERIA && clientId == SalesChannel.CREMERIA_CLIENT_ID) {
+                SalesChannel.CREMERIA_CLIENT_NAME
             } else {
-                dao.getDeliveryById(deliveryId)
+                dao.getClientById(clientId)?.name ?: throw IllegalStateException("Cliente no encontrado")
             }
-                ?: throw IllegalStateException("Entrega no encontrada")
-            if (delivery.status == "CANCELADA") {
-                throw IllegalStateException("No se puede abonar a una entrega cancelada")
+
+            val allClientDeliveries = if (salesChannel == SalesChannel.CREMERIA) {
+                dao.getAllCremeriaDeliveriesOnce().filter { it.clientId == clientId }
+            } else {
+                dao.getPublicDeliveriesOnce().filter { it.clientId == clientId }
             }
-            if (delivery.clientId != clientId) {
-                throw IllegalStateException("La entrega no pertenece al cliente")
-            }
-            val currentPending = BigDecimal.valueOf(delivery.pendingBalanceMxn)
+            val pendingDeliveries = allClientDeliveries
+                .filter { it.status == "ACTIVA" && it.pendingBalanceMxn > 0.0 }
+                .sortedWith(compareBy<DeliveryEntity> { it.dateMillis }.thenBy { it.id })
+
+            val previousTotalDebt = pendingDeliveries
+                .fold(BigDecimal.ZERO) { acc, d -> acc.add(BigDecimal.valueOf(d.pendingBalanceMxn)) }
                 .setScale(2, RoundingMode.HALF_UP)
-            if (currentPending <= BigDecimal.ZERO) {
-                throw IllegalStateException("Esta entrega ya está liquidada")
+
+            if (previousTotalDebt <= BigDecimal.ZERO) {
+                throw IllegalStateException("Este cliente no tiene adeudos pendientes")
             }
-            val applied = BigDecimal.valueOf(amountMxn)
-                .setScale(2, RoundingMode.HALF_UP)
-                .coerceAtMost(currentPending)
-            val newPending = currentPending.subtract(applied)
+
+            val requestedAmount = BigDecimal.valueOf(amountMxn).setScale(2, RoundingMode.HALF_UP)
+            require(requestedAmount > BigDecimal.ZERO) { "El abono debe ser mayor a cero" }
+
+            val targetDeliveryId: Long
+            val targetFolioSummary: String
+
+            if (deliveryId != null) {
+                val delivery = if (salesChannel == SalesChannel.CREMERIA) {
+                    dao.getCremeriaDeliveryById(deliveryId)
+                } else {
+                    dao.getDeliveryById(deliveryId)
+                }
+                    ?: throw IllegalStateException("Entrega no encontrada")
+                if (delivery.status == "CANCELADA") {
+                    throw IllegalStateException("No se puede abonar a una entrega cancelada")
+                }
+                if (delivery.clientId != clientId) {
+                    throw IllegalStateException("La entrega no pertenece al cliente")
+                }
+                val currentPending = BigDecimal.valueOf(delivery.pendingBalanceMxn)
+                    .setScale(2, RoundingMode.HALF_UP)
+                if (currentPending <= BigDecimal.ZERO) {
+                    throw IllegalStateException("Esta entrega ya está liquidada")
+                }
+                if (requestedAmount > currentPending) {
+                    throw IllegalArgumentException(
+                        "El abono excede el saldo pendiente de ${delivery.folio} (${CalculationEngine.formatMoney(currentPending)} MXN)",
+                    )
+                }
+                val newPending = currentPending.subtract(requestedAmount)
+                    .setScale(2, RoundingMode.HALF_UP)
+                    .coerceAtLeast(BigDecimal.ZERO)
+                dao.updateDelivery(delivery.copy(pendingBalanceMxn = newPending.toDouble()))
+                targetDeliveryId = delivery.id
+                targetFolioSummary = delivery.folio
+            } else {
+                if (requestedAmount > previousTotalDebt) {
+                    throw IllegalArgumentException(
+                        "El abono excede el adeudo total actual (${CalculationEngine.formatMoney(previousTotalDebt)} MXN)",
+                    )
+                }
+                var remainingToApply = requestedAmount
+                val affectedDeliveries = mutableListOf<DeliveryEntity>()
+                for (del in pendingDeliveries) {
+                    if (remainingToApply <= BigDecimal.ZERO) break
+                    val notePending = BigDecimal.valueOf(del.pendingBalanceMxn)
+                        .setScale(2, RoundingMode.HALF_UP)
+                    if (notePending <= BigDecimal.ZERO) continue
+                    val slice = remainingToApply.min(notePending)
+                    val updatedPending = notePending.subtract(slice)
+                        .setScale(2, RoundingMode.HALF_UP)
+                        .coerceAtLeast(BigDecimal.ZERO)
+                    dao.updateDelivery(del.copy(pendingBalanceMxn = updatedPending.toDouble()))
+                    affectedDeliveries.add(del)
+                    remainingToApply = remainingToApply.subtract(slice)
+                }
+                if (affectedDeliveries.isEmpty()) {
+                    throw IllegalStateException("No se encontraron notas pendientes para aplicar el abono")
+                }
+                targetDeliveryId = affectedDeliveries.first().id
+                targetFolioSummary = affectedDeliveries.joinToString(", ") { it.folio }
+            }
+
+            val remainingTotalDebt = previousTotalDebt.subtract(requestedAmount)
                 .setScale(2, RoundingMode.HALF_UP)
                 .coerceAtLeast(BigDecimal.ZERO)
 
-            dao.updateDelivery(delivery.copy(pendingBalanceMxn = newPending.toDouble()))
-            dao.insertAbono(
+            val settings = ensureDefaultSettings()
+            val seq = settings.nextAbonoSequence.coerceAtLeast(1)
+            val year = Calendar.getInstance().get(Calendar.YEAR)
+            val prefix = if (salesChannel == SalesChannel.CREMERIA) "CR-ABN" else "ABN"
+            val abonoFolio = String.format(Locale.US, "%s-%d-%04d", prefix, year, seq)
+
+            val abonoId = dao.insertAbono(
                 AbonoEntity(
                     clientId = clientId,
-                    deliveryId = delivery.id,
-                    deliveryFolio = delivery.folio,
-                    amountMxn = applied.toDouble(),
+                    deliveryId = targetDeliveryId,
+                    deliveryFolio = targetFolioSummary,
+                    amountMxn = requestedAmount.toDouble(),
                     dateMillis = System.currentTimeMillis(),
                     note = note.trim(),
                     isCancelled = false,
                     salesChannel = salesChannel,
+                    abonoFolio = abonoFolio,
+                    clientName = resolvedClientName,
+                    previousTotalDebtMxn = previousTotalDebt.toDouble(),
+                    remainingTotalDebtMxn = remainingTotalDebt.toDouble(),
                 ),
             )
+            dao.upsertSettings(settings.copy(nextAbonoSequence = seq + 1))
+            abonoId
         }
     }
 
@@ -840,6 +921,12 @@ class HyhRepository(
         PdfDocumentGenerator.generateTicketPdf(context, delivery, settings, client)
     }
 
+    suspend fun generateAbonoTicketPdf(abono: AbonoEntity): File = withContext(Dispatchers.IO) {
+        val settings = ensureDefaultSettings()
+        val client = dao.getClientById(abono.clientId)
+        PdfDocumentGenerator.generateAbonoTicketPdf(context, abono, settings, client)
+    }
+
     suspend fun generateTicketJson(delivery: DeliveryEntity): File = withContext(Dispatchers.IO) {
         val settings = ensureDefaultSettings()
         JsonExporter.writeDeliveryJsonFile(context, delivery, settings)
@@ -1026,6 +1113,7 @@ class HyhRepository(
             creditLegendClosing = sObj?.optString("creditLegendClosing", "Válido con firma digital.")
                 ?.ifBlank { "Válido con firma digital." } ?: "Válido con firma digital.",
             ticketVariant = sObj?.optInt("ticketVariant", 1)?.coerceIn(1, 5) ?: 1,
+            nextAbonoSequence = sObj?.optInt("nextAbonoSequence", 1)?.coerceAtLeast(1) ?: 1,
         )
 
         fun Double.nonNegOrZero(): Double = if (isFinite() && this >= 0.0) this else 0.0
@@ -1107,6 +1195,10 @@ class HyhRepository(
                 note = o.optString("note", ""),
                 isCancelled = o.optBoolean("isCancelled", false),
                 salesChannel = o.optString("salesChannel", SalesChannel.PUBLIC),
+                abonoFolio = o.optString("abonoFolio", ""),
+                clientName = o.optString("clientName", ""),
+                previousTotalDebtMxn = o.optDouble("previousTotalDebtMxn", 0.0).nonNegOrZero(),
+                remainingTotalDebtMxn = o.optDouble("remainingTotalDebtMxn", 0.0).nonNegOrZero(),
             )
         }
         val reminders = parseJsonArray(root.optJSONArray("reminders")) { o ->

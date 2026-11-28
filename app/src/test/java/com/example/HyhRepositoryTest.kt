@@ -790,13 +790,16 @@ class HyhRepositoryTest {
         )
         helper.writableDatabase.close()
 
-        // Open via Room with real MIGRATION_1_2 + MIGRATION_2_3 + MIGRATION_3_4 + MIGRATION_4_5 to validate full schema compatibility
+        // Open via Room with real migrations v2 -> v8 to validate full schema compatibility
         val upgradedDb = Room.databaseBuilder(context, HyhDatabase::class.java, dbFile.absolutePath)
             .addMigrations(
                 HyhDatabase.MIGRATION_1_2,
                 HyhDatabase.MIGRATION_2_3,
                 HyhDatabase.MIGRATION_3_4,
                 HyhDatabase.MIGRATION_4_5,
+                HyhDatabase.MIGRATION_5_6,
+                HyhDatabase.MIGRATION_6_7,
+                HyhDatabase.MIGRATION_7_8,
             )
             .allowMainThreadQueries()
             .build()
@@ -1221,6 +1224,9 @@ class HyhRepositoryTest {
                 HyhDatabase.MIGRATION_2_3,
                 HyhDatabase.MIGRATION_3_4,
                 HyhDatabase.MIGRATION_4_5,
+                HyhDatabase.MIGRATION_5_6,
+                HyhDatabase.MIGRATION_6_7,
+                HyhDatabase.MIGRATION_7_8,
             )
             .allowMainThreadQueries()
             .build()
@@ -1278,7 +1284,12 @@ class HyhRepositoryTest {
         helper.writableDatabase.close()
 
         val upgradedDb = Room.databaseBuilder(context, HyhDatabase::class.java, dbFile.absolutePath)
-            .addMigrations(HyhDatabase.MIGRATION_4_5)
+            .addMigrations(
+                HyhDatabase.MIGRATION_4_5,
+                HyhDatabase.MIGRATION_5_6,
+                HyhDatabase.MIGRATION_6_7,
+                HyhDatabase.MIGRATION_7_8,
+            )
             .allowMainThreadQueries()
             .build()
         val upgradedRepo = HyhRepository(context, upgradedDb)
@@ -1377,5 +1388,198 @@ class HyhRepositoryTest {
         assertTrue(restoreRes.isSuccess)
         assertEquals(2, repository.getSettingsOnce().ticketVariant)
         File(backup.filePath).delete()
+    }
+
+    @Test
+    fun `independent FIFO partial payment across multiple deliveries updates debt records abono ticket data and prints cleanly`() = runTest {
+        repository.updateBusinessSettings(
+            phone = "5510203040",
+            address = "Bodega 12",
+            slogan = "LOS MAS FRESCOS DE LA ZONA",
+            globalPricePerKg = 45.0,
+        )
+        val clientId = repository.saveClient(
+            name = "Abarrotes Don Luis",
+            phone = "5588990011",
+            address = "Av. Reforma 45",
+            specialPricePerKg = 40.0,
+        )
+        repository.registerPurchase(
+            purchaseDateMillis = System.currentTimeMillis(),
+            boxes = 20.0,
+            brand = "San Juan",
+            grossWeightKg = 480.0,
+        )
+
+        val sig1 = Bitmap.createBitmap(100, 40, Bitmap.Config.ARGB_8888)
+        val delivery1Id = repository.registerDelivery(
+            clientId = clientId,
+            modality = DeliveryModality.CAJA_COMPLETA,
+            brand = "San Juan",
+            boxes = 1.0,
+            grossWeightKg = 27.0,
+            tareDeductionKg = 2.0,
+            netWeightKg = 25.0,
+            pricePerKg = 40.0,
+            rawAmountMxn = 1000.0,
+            finalAmountMxn = 1000.0,
+            paymentMethod = PaymentMethod.CREDITO,
+            initialPaymentMxn = 0.0,
+            signatureBitmap = sig1,
+        )
+        val delivery2Id = repository.registerDelivery(
+            clientId = clientId,
+            modality = DeliveryModality.CAJA_COMPLETA,
+            brand = "San Juan",
+            boxes = 2.0,
+            grossWeightKg = 41.5,
+            tareDeductionKg = 4.0,
+            netWeightKg = 37.5,
+            pricePerKg = 40.0,
+            rawAmountMxn = 1500.0,
+            finalAmountMxn = 1500.0,
+            paymentMethod = PaymentMethod.CREDITO,
+            initialPaymentMxn = 0.0,
+            signatureBitmap = sig1,
+        )
+        val del1 = repository.observeDeliveryById(delivery1Id).first()!!
+        val del2 = repository.observeDeliveryById(delivery2Id).first()!!
+
+        // Overpayment above total debt ($2,500) must fail
+        var failedOverpay = false
+        try {
+            repository.recordAbono(clientId, null, 2600.0, "Exceso")
+        } catch (_: IllegalArgumentException) {
+            failedOverpay = true
+        }
+        assertTrue(failedOverpay)
+
+        // Record FIFO partial payment ($1,300) without creating any delivery
+        val abonoId = repository.recordAbono(
+            clientId = clientId,
+            deliveryId = null,
+            amountMxn = 1300.0,
+            note = "Efectivo en tienda",
+        )
+        assertTrue(abonoId > 0L)
+
+        val del1After = repository.observeDeliveryById(delivery1Id).first()!!
+        val del2After = repository.observeDeliveryById(delivery2Id).first()!!
+        assertEquals(0.0, del1After.pendingBalanceMxn, 0.001)
+        assertEquals(1200.0, del2After.pendingBalanceMxn, 0.001)
+
+        val abono = repository.getAbonoOnce(abonoId)!!
+        assertTrue(abono.abonoFolio.startsWith("ABN-"))
+        assertEquals("Abarrotes Don Luis", abono.clientName)
+        assertEquals(2500.0, abono.previousTotalDebtMxn, 0.001)
+        assertEquals(1300.0, abono.amountMxn, 0.001)
+        assertEquals(1200.0, abono.remainingTotalDebtMxn, 0.001)
+        assertTrue(abono.deliveryFolio.contains(del1.folio))
+        assertTrue(abono.deliveryFolio.contains(del2.folio))
+
+        val settings = repository.getSettingsOnce()
+        val client = repository.getClientOnce(clientId)
+        assertEquals(2, settings.nextAbonoSequence)
+
+        // Verify ESC/POS Abono Ticket only includes payment/debt info (no egg/sugar delivery details)
+        val escPos = String(
+            com.example.system.ThermalPrinterManager(context).buildEscPosAbonoTicketBytes(abono, settings, client),
+            Charsets.US_ASCII,
+        )
+        assertTrue(escPos.contains("COMPROBANTE DE ABONO"))
+        assertTrue(escPos.contains("Adeudo anterior:"))
+        assertTrue(escPos.contains("Abono realizado:"))
+        assertTrue(escPos.contains("ADEUDO ACTUAL"))
+        assertTrue(escPos.contains("\$1,200.00 MXN"))
+        assertTrue(!escPos.contains("COMPROBANTE DE REMISION"))
+        assertTrue(!escPos.contains("KILOS NETOS"))
+
+        // Verify PDF rendering and file generation for Ticket de Abono
+        val estHeight = com.example.system.PdfDocumentGenerator.measureAbonoTicketHeight(
+            context = context,
+            abono = abono,
+            settings = settings,
+            client = client,
+        )
+        val bmp = Bitmap.createBitmap(164, estHeight, Bitmap.Config.ARGB_8888)
+        val drawn = com.example.system.PdfDocumentGenerator.renderAbonoTicketToCanvas(
+            context = context,
+            canvas = android.graphics.Canvas(bmp),
+            abono = abono,
+            settings = settings,
+            client = client,
+        )
+        assertTrue("Abono PDF height ($drawn) must fit ($estHeight)", drawn <= estHeight)
+
+        val abonoPdf = repository.generateAbonoTicketPdf(abono)
+        assertTrue(abonoPdf.exists() && abonoPdf.length() > 0L)
+        abonoPdf.delete()
+
+        // JSON backup & restore preserves new AbonoEntity fields & nextAbonoSequence
+        val backup = repository.exportFullJsonBackup()
+        val restoreRes = repository.restoreFromLocalBackup(backup)
+        assertTrue(restoreRes.isSuccess)
+        val restoredAbono = repository.getAbonoOnce(abonoId)!!
+        assertEquals(abono.abonoFolio, restoredAbono.abonoFolio)
+        assertEquals("Abarrotes Don Luis", restoredAbono.clientName)
+        assertEquals(2500.0, restoredAbono.previousTotalDebtMxn, 0.001)
+        assertEquals(1200.0, restoredAbono.remainingTotalDebtMxn, 0.001)
+        assertEquals(2, repository.getSettingsOnce().nextAbonoSequence)
+        File(backup.filePath).delete()
+    }
+
+    @Test
+    fun `migration 7 to 8 preserves v7 clients deliveries abonos and settings without data loss`() = runTest {
+        val dbFile = File(context.cacheDir, "migration_v7_to_v8_test.db").apply { delete() }
+        val helper = androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory().create(
+            androidx.sqlite.db.SupportSQLiteOpenHelper.Configuration.builder(context)
+                .name(dbFile.absolutePath)
+                .callback(object : androidx.sqlite.db.SupportSQLiteOpenHelper.Callback(7) {
+                    override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                        db.execSQL("CREATE TABLE IF NOT EXISTS clients (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, name TEXT NOT NULL, phone TEXT NOT NULL, address TEXT NOT NULL, specialPricePerKg REAL, creditTermDays INTEGER, createdAtMillis INTEGER NOT NULL)")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS egg_purchases (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, purchaseDateMillis INTEGER NOT NULL, boxes REAL NOT NULL, brand TEXT NOT NULL, grossWeightKg REAL NOT NULL, createdAtMillis INTEGER NOT NULL)")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS inventory_brands (brand TEXT PRIMARY KEY NOT NULL, availableBoxes REAL NOT NULL, deliveredBoxes REAL NOT NULL)")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS deliveries (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, folio TEXT NOT NULL, clientId INTEGER NOT NULL, clientName TEXT NOT NULL, dateMillis INTEGER NOT NULL, modality TEXT NOT NULL, brand TEXT NOT NULL, boxes REAL NOT NULL, grossWeightKg REAL NOT NULL, tareDeductionKg REAL NOT NULL, netWeightKg REAL NOT NULL, pricePerKg REAL NOT NULL, rawAmountMxn REAL NOT NULL, finalAmountMxn REAL NOT NULL, paymentMethod TEXT NOT NULL, initialPaymentMxn REAL NOT NULL, pendingBalanceMxn REAL NOT NULL, previousDebtSnapshotMxn REAL NOT NULL, totalAccumulatedDebtSnapshotMxn REAL NOT NULL, signaturePath TEXT, status TEXT NOT NULL, cancelledAtMillis INTEGER, cancellationReason TEXT, itemsSnapshotJson TEXT NOT NULL DEFAULT '[]', sugarSacks REAL NOT NULL DEFAULT 0.0, sugarSackWeightKg REAL NOT NULL DEFAULT 0.0, sugarPricePerSackMxn REAL NOT NULL DEFAULT 0.0, sugarSubtotalMxn REAL NOT NULL DEFAULT 0.0, salesChannel TEXT NOT NULL DEFAULT 'PUBLIC')")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS abonos (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, clientId INTEGER NOT NULL, deliveryId INTEGER NOT NULL, deliveryFolio TEXT NOT NULL, amountMxn REAL NOT NULL, dateMillis INTEGER NOT NULL, note TEXT NOT NULL, isCancelled INTEGER NOT NULL, salesChannel TEXT NOT NULL DEFAULT 'PUBLIC')")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS reminders (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, clientId INTEGER NOT NULL, clientName TEXT NOT NULL, deliveryDateMillis INTEGER NOT NULL, boxesNote TEXT NOT NULL, note TEXT NOT NULL, isCompleted INTEGER NOT NULL, completedAtMillis INTEGER, createdAtMillis INTEGER NOT NULL)")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS daily_closings (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, folio TEXT NOT NULL, dateKey TEXT NOT NULL, createdAtMillis INTEGER NOT NULL, totalDeliveries INTEGER NOT NULL, totalBoxesDelivered REAL NOT NULL, totalKgDelivered REAL NOT NULL, cashSalesMxn REAL NOT NULL, creditSalesMxn REAL NOT NULL, abonosReceivedMxn REAL NOT NULL, totalMoneyCollectedMxn REAL NOT NULL, pendingDebtsMxn REAL NOT NULL, clientsServedCount INTEGER NOT NULL, movementsSnapshotJson TEXT NOT NULL, pdfPath TEXT NOT NULL, jsonPath TEXT NOT NULL, hashSignature TEXT NOT NULL)")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS backup_records (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, fileName TEXT NOT NULL, filePath TEXT NOT NULL, format TEXT NOT NULL, sizeBytes INTEGER NOT NULL, createdAtMillis INTEGER NOT NULL)")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS sugar_purchases (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, purchaseDateMillis INTEGER NOT NULL, sacks REAL NOT NULL, totalWeightKg REAL NOT NULL, createdAtMillis INTEGER NOT NULL)")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS sugar_inventory (id INTEGER NOT NULL PRIMARY KEY, availableSacks REAL NOT NULL, deliveredSacks REAL NOT NULL, availableWeightKg REAL NOT NULL, deliveredWeightKg REAL NOT NULL)")
+                        db.execSQL("CREATE TABLE IF NOT EXISTS business_settings (id INTEGER NOT NULL PRIMARY KEY, businessName TEXT NOT NULL, slogan TEXT NOT NULL, phone TEXT NOT NULL, address TEXT NOT NULL, globalPricePerKg REAL NOT NULL, printerType TEXT NOT NULL, printerName TEXT NOT NULL, printerAddress TEXT NOT NULL, nextFolioSequence INTEGER NOT NULL, nextClosingSequence INTEGER NOT NULL, creditTermDays INTEGER NOT NULL DEFAULT 7, creditMoratoriumInterestPercent REAL NOT NULL DEFAULT 0.0, creditPaymentPlace TEXT NOT NULL DEFAULT '', creditLegendExtra TEXT NOT NULL DEFAULT '', creditLegendClosing TEXT NOT NULL DEFAULT 'Válido con firma digital.', nextCremeriaFolioSequence INTEGER NOT NULL DEFAULT 1, printerTransport TEXT NOT NULL DEFAULT 'CLASSIC')")
+                        db.execSQL("INSERT INTO clients (id, name, phone, address, specialPricePerKg, creditTermDays, createdAtMillis) VALUES (1, 'Cliente v7', '5511223344', 'Calle Norte 7', 43.0, 15, 1700000000000)")
+                        db.execSQL("INSERT INTO deliveries (id, folio, clientId, clientName, dateMillis, modality, brand, boxes, grossWeightKg, tareDeductionKg, netWeightKg, pricePerKg, rawAmountMxn, finalAmountMxn, paymentMethod, initialPaymentMxn, pendingBalanceMxn, previousDebtSnapshotMxn, totalAccumulatedDebtSnapshotMxn, signaturePath, status, cancelledAtMillis, cancellationReason) VALUES (1, 'HYH-2026-0100', 1, 'Cliente v7', 1700000000000, 'CAJA_COMPLETA', 'Tehuacán', 2.0, 44.0, 4.0, 40.0, 43.0, 1720.0, 1720.0, 'CREDITO', 220.0, 1500.0, 0.0, 1500.0, NULL, 'ACTIVA', NULL, NULL)")
+                        db.execSQL("INSERT INTO abonos (id, clientId, deliveryId, deliveryFolio, amountMxn, dateMillis, note, isCancelled) VALUES (1, 1, 1, 'HYH-2026-0100', 500.0, 1700000500000, 'Abono previo', 0)")
+                        db.execSQL("INSERT INTO business_settings (id, businessName, slogan, phone, address, globalPricePerKg, printerType, printerName, printerAddress, nextFolioSequence, nextClosingSequence, printerTransport) VALUES (1, 'H y H HUEVOS', 'LOS MAS FRESCOS DE LA ZONA', '5599998888', 'Bodega 1', 45.0, 'BLUETOOTH', 'PT-210', 'AA:BB:CC:DD:EE:FF', 101, 20, 'BLE')")
+                    }
+                    override fun onUpgrade(db: androidx.sqlite.db.SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+                })
+                .build(),
+        )
+        helper.writableDatabase.close()
+
+        val upgradedDb = Room.databaseBuilder(context, HyhDatabase::class.java, dbFile.absolutePath)
+            .addMigrations(HyhDatabase.MIGRATION_7_8)
+            .allowMainThreadQueries()
+            .build()
+        val upgradedRepo = HyhRepository(context, upgradedDb)
+
+        val clients = upgradedRepo.observeClients().first()
+        val deliveries = upgradedRepo.observeDeliveries().first()
+        val legacyAbono = upgradedRepo.getAbonoOnce(1L)!!
+        val settings = upgradedRepo.getSettingsOnce()
+
+        assertEquals(1, clients.size)
+        assertEquals("Cliente v7", clients.first().name)
+        assertEquals(1, deliveries.size)
+        assertEquals("HYH-2026-0100", deliveries.first().folio)
+        assertEquals(500.0, legacyAbono.amountMxn, 0.001)
+        assertEquals("", legacyAbono.abonoFolio)
+        assertEquals(1, settings.ticketVariant)
+        assertEquals(1, settings.nextAbonoSequence)
+        assertEquals("BLE", settings.printerTransport)
+
+        upgradedDb.close()
+        dbFile.delete()
     }
 }

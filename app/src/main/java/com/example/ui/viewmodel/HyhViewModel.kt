@@ -606,23 +606,31 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
 
     fun recordAbono(
         clientId: Long,
-        deliveryId: Long,
+        deliveryId: Long?,
         amountText: String,
         note: String,
-        onDone: () -> Unit = {},
+        onDone: (Long) -> Unit = {},
         isCremeria: Boolean = false,
     ) {
         viewModelScope.launch {
             runCatching {
                 val amount = CalculationEngine.parsePositiveDecimal(amountText).toDouble()
                 repository.recordAbono(
-                    clientId, deliveryId, amount, note,
-                    if (isCremeria) SalesChannel.CREMERIA else SalesChannel.PUBLIC,
+                    clientId = clientId,
+                    deliveryId = deliveryId,
+                    amountMxn = amount,
+                    note = note,
+                    salesChannel = if (isCremeria) SalesChannel.CREMERIA else SalesChannel.PUBLIC,
                 )
-            }.onSuccess {
+            }.onSuccess { abonoId ->
                 soundManager.playPaymentSuccessSound()
-                _feedbackMessage.value = "Abono registrado correctamente"
-                onDone()
+                _overlayState.value = OverlayState.Success(
+                    title = "Abono registrado",
+                    message = "Saldo actualizado. Abriendo ticket de abono...",
+                )
+                delay(1800)
+                _overlayState.value = OverlayState.None
+                onDone(abonoId)
             }.onFailure {
                 _feedbackMessage.value = it.message ?: "Error al registrar abono"
             }
@@ -769,6 +777,70 @@ class HyhViewModel(application: Application) : AndroidViewModel(application) {
                 saveOrRequestSaf(file, "application/pdf", file.name, BuildConfig.BRAND_TICKETS_FOLDER)
             }.onFailure {
                 _feedbackMessage.value = "Error al generar PDF: ${it.message}"
+            }
+        }
+    }
+
+    fun printAbonoTicket(abono: AbonoEntity) {
+        viewModelScope.launch {
+            val currentSettings = repository.getSettingsOnce()
+            val client = repository.getClientOnce(abono.clientId)
+            printerManager.printAbonoTicket(abono, currentSettings, client)
+                .onSuccess { msg -> _feedbackMessage.value = msg }
+                .onFailure { err -> _feedbackMessage.value = err.message ?: "Error de impresión" }
+        }
+    }
+
+    fun shareAbonoPdfWhatsApp(abono: AbonoEntity) {
+        viewModelScope.launch {
+            runCatching {
+                val pdfFile = repository.generateAbonoTicketPdf(abono)
+                val uri = FileProvider.getUriForFile(
+                    app,
+                    "${BuildConfig.APPLICATION_ID}.fileprovider",
+                    pdfFile,
+                )
+                val folioLabel = abono.abonoFolio.ifBlank { "AB-${abono.id}" }
+                val waIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "application/pdf"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(
+                        Intent.EXTRA_TEXT,
+                        "Comprobante de Abono ${BuildConfig.BRAND_APP_NAME} • Folio $folioLabel",
+                    )
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    setPackage("com.whatsapp")
+                }
+                try {
+                    app.startActivity(waIntent)
+                } catch (_: ActivityNotFoundException) {
+                    val chooser = Intent.createChooser(
+                        Intent(Intent.ACTION_SEND).apply {
+                            type = "application/pdf"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        },
+                        "Compartir comprobante de abono PDF",
+                    ).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    app.startActivity(chooser)
+                }
+            }.onFailure {
+                _feedbackMessage.value = "No se pudo compartir el PDF: ${it.message}"
+            }
+        }
+    }
+
+    fun downloadAbonoPdf(abono: AbonoEntity) {
+        viewModelScope.launch {
+            runCatching {
+                repository.generateAbonoTicketPdf(abono)
+            }.onSuccess { file ->
+                saveOrRequestSaf(file, "application/pdf", file.name, BuildConfig.BRAND_TICKETS_FOLDER)
+            }.onFailure {
+                _feedbackMessage.value = "Error al generar PDF de abono: ${it.message}"
             }
         }
     }

@@ -114,6 +114,10 @@ data class AbonoEntity(
     val note: String = "",
     val isCancelled: Boolean = false,
     val salesChannel: String = "PUBLIC",
+    val abonoFolio: String = "",
+    val clientName: String = "",
+    val previousTotalDebtMxn: Double = 0.0,
+    val remainingTotalDebtMxn: Double = 0.0,
 )
 
 @Entity(tableName = "reminders")
@@ -180,4 +184,6 @@ data class BusinessSettingsEntity(
     val creditLegendExtra: String = "",
     val creditLegendClosing: String = "Válido con firma digital.",
     val nextCremeriaFolioSequence: Int = 1,
+    val ticketVariant: Int = 1,
+    val nextAbonoSequence: Int = 1,
 )

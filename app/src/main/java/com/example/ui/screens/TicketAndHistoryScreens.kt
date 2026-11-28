@@ -53,6 +53,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import com.example.data.local.entity.AbonoEntity
 import com.example.data.local.entity.BusinessSettingsEntity
 import com.example.data.local.entity.ClientEntity
 import com.example.data.local.entity.DeliveryEntity
@@ -67,6 +68,7 @@ import com.example.ui.components.AuroraPrimaryButton
 import com.example.ui.components.AuroraStatusBadge
 import com.example.ui.components.AuroraTextField
 import com.example.ui.components.AuroraTopBar
+import com.example.ui.components.ThermalAbonoTicketView
 import com.example.ui.components.ThermalTicket60mmView
 import com.example.ui.theme.Error
 import com.example.ui.theme.ErrorContainer
@@ -272,6 +274,157 @@ fun TicketScreen(
                 showCancelDialog = false
             },
         )
+    }
+}
+
+@Composable
+fun AbonoTicketScreen(
+    abono: AbonoEntity?,
+    client: ClientEntity?,
+    settings: BusinessSettingsEntity,
+    onBack: () -> Unit,
+    onSelectTicketVariant: (Int) -> Unit = {},
+    onPrint: (AbonoEntity) -> Unit,
+    onShareWhatsApp: (AbonoEntity) -> Unit,
+    onDownloadPdf: (AbonoEntity) -> Unit,
+) {
+    if (abono == null) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            AuroraTopBar(title = "Ticket de Abono", showDrawerMenu = false, onMenuOrBackClick = onBack)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                AuroraEmptyState(
+                    icon = Icons.Default.ReceiptLong,
+                    title = "Comprobante de abono no encontrado",
+                    subtitle = "No se encontró el abono solicitado.",
+                )
+            }
+        }
+        return
+    }
+
+    val activeVariant = TicketPrintVariant.fromId(settings.ticketVariant)
+    val resolvedFolio = abono.abonoFolio.ifBlank { "AB-${abono.id}" }
+    val isSettled = abono.remainingTotalDebtMxn <= 0.0
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        AuroraTopBar(
+            title = "Ticket de Abono ${activeVariant.widthMm} mm",
+            subtitle = "$resolvedFolio • ${abono.clientName.ifBlank { client?.name ?: "Cliente" }}",
+            showDrawerMenu = false,
+            onMenuOrBackClick = onBack,
+            trailingBadge = {
+                AuroraStatusBadge(
+                    text = when {
+                        abono.isCancelled -> "CANCELADO"
+                        isSettled -> "LIQUIDADO"
+                        else -> "ABONO PARCIAL"
+                    },
+                    tint = if (abono.isCancelled) Error else if (isSettled) PrimaryGlow else Secondary,
+                )
+            },
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            ThermalAbonoTicketView(
+                abono = abono,
+                client = client,
+                settings = settings,
+            )
+
+            AuroraCard {
+                Text(
+                    text = "Medida y Variante de Impresión (5 opciones)",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = OnSurface,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "${activeVariant.title} — ${activeVariant.description}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = OnSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    items(TicketPrintVariant.entries, key = { it.id }) { variant ->
+                        val selected = variant.id == activeVariant.id
+                        FilterChip(
+                            selected = selected,
+                            onClick = { onSelectTicketVariant(variant.id) },
+                            label = {
+                                Text(
+                                    text = variant.shortTitle,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Primary,
+                                selectedLabelColor = androidx.compose.ui.graphics.Color.White,
+                            ),
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("abono_ticket_variant_chip_${variant.id}"),
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider(color = Primary.copy(alpha = 0.14f))
+                Spacer(Modifier.height(12.dp))
+
+                Text(
+                    text = "Opciones del Ticket de Abono",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = OnSurface,
+                )
+                Spacer(Modifier.height(12.dp))
+
+                AuroraPrimaryButton(
+                    text = "Imprimir Ticket de Abono (${activeVariant.dimensionsLabel} • V${activeVariant.id})",
+                    icon = Icons.Default.Print,
+                    onClick = { onPrint(abono) },
+                    testTag = "abono_ticket_print_button",
+                )
+
+                Spacer(Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    AuroraOutlinedButton(
+                        text = "WhatsApp PDF",
+                        icon = Icons.Default.Share,
+                        onClick = { onShareWhatsApp(abono) },
+                        accentColor = PrimaryGlow,
+                        modifier = Modifier.weight(1f),
+                        testTag = "abono_ticket_whatsapp_button",
+                    )
+                    AuroraOutlinedButton(
+                        text = "Descargar PDF",
+                        icon = Icons.Default.PictureAsPdf,
+                        onClick = { onDownloadPdf(abono) },
+                        accentColor = Secondary,
+                        modifier = Modifier.weight(1f),
+                        testTag = "abono_ticket_download_pdf_button",
+                    )
+                }
+            }
+        }
     }
 }
 

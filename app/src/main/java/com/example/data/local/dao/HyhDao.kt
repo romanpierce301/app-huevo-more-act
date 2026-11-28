@@ -162,6 +162,12 @@ interface HyhDao {
     @Query("SELECT * FROM abonos WHERE clientId = :clientId AND isCancelled = 0 AND salesChannel = 'CREMERIA' ORDER BY dateMillis DESC, id DESC")
     fun observeCremeriaAbonosForClient(clientId: Long): Flow<List<AbonoEntity>>
 
+    @Query("SELECT * FROM abonos WHERE id = :id")
+    fun observeAbonoById(id: Long): Flow<AbonoEntity?>
+
+    @Query("SELECT * FROM abonos WHERE id = :id")
+    suspend fun getAbonoById(id: Long): AbonoEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAbono(abono: AbonoEntity): Long
 

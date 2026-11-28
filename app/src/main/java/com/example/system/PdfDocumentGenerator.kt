@@ -13,6 +13,7 @@ import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import com.example.R
+import com.example.data.local.entity.AbonoEntity
 import com.example.data.local.entity.BusinessSettingsEntity
 import com.example.data.local.entity.ClientEntity
 import com.example.data.local.entity.DailyClosingEntity
@@ -21,6 +22,7 @@ import com.example.data.local.entity.SalesChannel
 import com.example.domain.CalculationEngine
 import com.example.domain.DeliveryModality
 import com.example.domain.PaymentMethod
+import com.example.domain.TicketPrintVariant
 import java.io.File
 import java.io.FileOutputStream
 import java.math.BigDecimal
@@ -34,8 +36,8 @@ object PdfDocumentGenerator {
     private val dateFormatter = SimpleDateFormat("dd 'de' MMMM, yyyy", Locale("es", "MX"))
     private val timeFormatter = SimpleDateFormat("hh:mm a", Locale.US)
 
-    const val TICKET_PAGE_WIDTH_PT = 170 // 60 mm exactos (72 dpi)
-    const val TICKET_PAGE_HEIGHT_PT = 369 // 130 mm exactos (72 dpi)
+    const val TICKET_PAGE_WIDTH_PT = 164 // 58 mm exactos por defecto (72 dpi)
+    const val TICKET_PAGE_HEIGHT_PT = 369 // 130 mm exactos por defecto (72 dpi)
 
     fun generateTicketPdf(
         context: Context,
@@ -45,9 +47,9 @@ object PdfDocumentGenerator {
     ): File {
         val dir = File(context.filesDir, "tickets").apply { mkdirs() }
         val file = File(dir, "Ticket_${delivery.folio}.pdf")
-
-        val pageWidth = TICKET_PAGE_WIDTH_PT
-        val pageHeight = TICKET_PAGE_HEIGHT_PT
+        val variant = TicketPrintVariant.fromId(settings.ticketVariant)
+        val pageWidth = variant.pdfWidthPt
+        val pageHeight = variant.pdfHeightPt
         val margin = 8f
 
         val logoRaw = BitmapFactory.decodeResource(context.resources, R.drawable.img_ticket_logo)
@@ -78,11 +80,47 @@ object PdfDocumentGenerator {
         return file
     }
 
+    fun generateAbonoTicketPdf(
+        context: Context,
+        abono: AbonoEntity,
+        settings: BusinessSettingsEntity,
+        client: ClientEntity? = null,
+    ): File {
+        val dir = File(context.filesDir, "tickets").apply { mkdirs() }
+        val rawFolio = abono.abonoFolio.ifBlank { "AB-${abono.id}" }
+        val safeFolio = rawFolio.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        val file = File(dir, "Ticket_Abono_$safeFolio.pdf")
+        val variant = TicketPrintVariant.fromId(settings.ticketVariant)
+        val pageWidth = variant.pdfWidthPt
+        val pageHeight = variant.pdfHeightPt
+        val margin = 8f
+        val logoRaw = BitmapFactory.decodeResource(context.resources, R.drawable.img_ticket_logo)
+
+        val pdf = PdfDocument()
+        val pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, 1).create()
+        val page = pdf.startPage(pageInfo)
+        renderAbonoTicketToCanvas(
+            context = context,
+            canvas = page.canvas,
+            pageWidth = pageWidth,
+            pageHeight = pageHeight,
+            margin = margin,
+            abono = abono,
+            settings = settings,
+            client = client,
+            logoRaw = logoRaw,
+        )
+        pdf.finishPage(page)
+        FileOutputStream(file).use { pdf.writeTo(it) }
+        pdf.close()
+        return file
+    }
+
     internal fun renderTicketToCanvas(
         context: Context,
         canvas: Canvas,
-        pageWidth: Int = TICKET_PAGE_WIDTH_PT,
-        pageHeight: Int = TICKET_PAGE_HEIGHT_PT,
+        pageWidth: Int? = null,
+        pageHeight: Int? = null,
         margin: Float = 8f,
         delivery: DeliveryEntity,
         settings: BusinessSettingsEntity,
@@ -93,9 +131,12 @@ object PdfDocumentGenerator {
             if (sigFile.exists()) BitmapFactory.decodeFile(sigFile.absolutePath) else null
         },
     ): Float {
+        val variant = TicketPrintVariant.fromId(settings.ticketVariant)
+        val effWidth = pageWidth ?: variant.pdfWidthPt
+        val effHeight = pageHeight ?: variant.pdfHeightPt
         val naturalHeight = measureNaturalTicketHeight(
             context = context,
-            pageWidth = pageWidth,
+            pageWidth = effWidth,
             margin = margin,
             delivery = delivery,
             settings = settings,
@@ -104,25 +145,72 @@ object PdfDocumentGenerator {
             signatureRaw = signatureRaw,
         )
         canvas.drawColor(Color.WHITE)
-        val availH = (pageHeight - 4f).coerceAtLeast(100f)
+        val availH = (effHeight - 4f).coerceAtLeast(100f)
         val fitScale = if (naturalHeight > availH) {
-            (availH / naturalHeight).coerceIn(0.35f, 1.0f)
+            (availH / naturalHeight).coerceIn(0.25f, 1.0f)
         } else {
             1.0f
         }
         canvas.save()
         if (fitScale < 1.0f) {
-            canvas.scale(fitScale, fitScale, pageWidth / 2f, 0f)
+            canvas.scale(fitScale, fitScale, effWidth / 2f, 0f)
         }
         val rawDrawn = renderTicketNaturalToCanvas(
             canvas = canvas,
-            pageWidth = pageWidth,
+            pageWidth = effWidth,
             margin = margin,
             delivery = delivery,
             settings = settings,
             client = client,
             logoRaw = logoRaw,
             signatureRaw = signatureRaw,
+        )
+        canvas.restore()
+        return rawDrawn * fitScale
+    }
+
+    internal fun renderAbonoTicketToCanvas(
+        context: Context,
+        canvas: Canvas,
+        pageWidth: Int? = null,
+        pageHeight: Int? = null,
+        margin: Float = 8f,
+        abono: AbonoEntity,
+        settings: BusinessSettingsEntity,
+        client: ClientEntity? = null,
+        logoRaw: Bitmap? = BitmapFactory.decodeResource(context.resources, R.drawable.img_ticket_logo),
+    ): Float {
+        val variant = TicketPrintVariant.fromId(settings.ticketVariant)
+        val effWidth = pageWidth ?: variant.pdfWidthPt
+        val effHeight = pageHeight ?: variant.pdfHeightPt
+        val naturalHeight = measureNaturalAbonoTicketHeight(
+            context = context,
+            pageWidth = effWidth,
+            margin = margin,
+            abono = abono,
+            settings = settings,
+            client = client,
+            logoRaw = logoRaw,
+        )
+        canvas.drawColor(Color.WHITE)
+        val availH = (effHeight - 4f).coerceAtLeast(100f)
+        val fitScale = if (naturalHeight > availH) {
+            (availH / naturalHeight).coerceIn(0.25f, 1.0f)
+        } else {
+            1.0f
+        }
+        canvas.save()
+        if (fitScale < 1.0f) {
+            canvas.scale(fitScale, fitScale, effWidth / 2f, 0f)
+        }
+        val rawDrawn = renderAbonoTicketNaturalToCanvas(
+            canvas = canvas,
+            pageWidth = effWidth,
+            margin = margin,
+            abono = abono,
+            settings = settings,
+            client = client,
+            logoRaw = logoRaw,
         )
         canvas.restore()
         return rawDrawn * fitScale
@@ -560,7 +648,7 @@ object PdfDocumentGenerator {
 
     internal fun measureTicketHeight(
         context: Context,
-        pageWidth: Int = TICKET_PAGE_WIDTH_PT,
+        pageWidth: Int? = null,
         margin: Float = 8f,
         delivery: DeliveryEntity,
         settings: BusinessSettingsEntity,
@@ -571,10 +659,27 @@ object PdfDocumentGenerator {
             if (sigFile.exists()) BitmapFactory.decodeFile(sigFile.absolutePath) else null
         },
     ): Int {
-        // El comprobante impreso en PDF siempre mide exactamente 60mm x 130mm (170 x 369 pt)
+        val variant = TicketPrintVariant.fromId(settings.ticketVariant)
+        val effWidth = pageWidth ?: variant.pdfWidthPt
         @Suppress("UNUSED_EXPRESSION")
-        measureNaturalTicketHeight(context, pageWidth, margin, delivery, settings, client, logoRaw, signatureRaw)
-        return TICKET_PAGE_HEIGHT_PT
+        measureNaturalTicketHeight(context, effWidth, margin, delivery, settings, client, logoRaw, signatureRaw)
+        return variant.pdfHeightPt
+    }
+
+    internal fun measureAbonoTicketHeight(
+        context: Context,
+        pageWidth: Int? = null,
+        margin: Float = 8f,
+        abono: AbonoEntity,
+        settings: BusinessSettingsEntity,
+        client: ClientEntity?,
+        logoRaw: Bitmap? = BitmapFactory.decodeResource(context.resources, R.drawable.img_ticket_logo),
+    ): Int {
+        val variant = TicketPrintVariant.fromId(settings.ticketVariant)
+        val effWidth = pageWidth ?: variant.pdfWidthPt
+        @Suppress("UNUSED_EXPRESSION")
+        measureNaturalAbonoTicketHeight(context, effWidth, margin, abono, settings, client, logoRaw)
+        return variant.pdfHeightPt
     }
 
     internal fun measureNaturalTicketHeight(
@@ -590,20 +695,241 @@ object PdfDocumentGenerator {
             if (sigFile.exists()) BitmapFactory.decodeFile(sigFile.absolutePath) else null
         },
     ): Float {
-        val picture = android.graphics.Picture()
-        val recCanvas = picture.beginRecording(pageWidth, 4000)
-        val measured = renderTicketNaturalToCanvas(
-            canvas = recCanvas,
-            pageWidth = pageWidth,
-            margin = margin,
-            delivery = delivery,
-            settings = settings,
-            client = client,
-            logoRaw = logoRaw,
-            signatureRaw = signatureRaw,
+        val dummyBmp = Bitmap.createBitmap(pageWidth.coerceAtLeast(1), 1, Bitmap.Config.ARGB_8888)
+        return try {
+            renderTicketNaturalToCanvas(
+                canvas = Canvas(dummyBmp),
+                pageWidth = pageWidth,
+                margin = margin,
+                delivery = delivery,
+                settings = settings,
+                client = client,
+                logoRaw = logoRaw,
+                signatureRaw = signatureRaw,
+            )
+        } finally {
+            dummyBmp.recycle()
+        }
+    }
+
+    internal fun measureNaturalAbonoTicketHeight(
+        context: Context,
+        pageWidth: Int = TICKET_PAGE_WIDTH_PT,
+        margin: Float = 8f,
+        abono: AbonoEntity,
+        settings: BusinessSettingsEntity,
+        client: ClientEntity?,
+        logoRaw: Bitmap? = BitmapFactory.decodeResource(context.resources, R.drawable.img_ticket_logo),
+    ): Float {
+        val dummyBmp = Bitmap.createBitmap(pageWidth.coerceAtLeast(1), 1, Bitmap.Config.ARGB_8888)
+        return try {
+            renderAbonoTicketNaturalToCanvas(
+                canvas = Canvas(dummyBmp),
+                pageWidth = pageWidth,
+                margin = margin,
+                abono = abono,
+                settings = settings,
+                client = client,
+                logoRaw = logoRaw,
+            )
+        } finally {
+            dummyBmp.recycle()
+        }
+    }
+
+    private fun renderAbonoTicketNaturalToCanvas(
+        canvas: Canvas,
+        pageWidth: Int,
+        margin: Float,
+        abono: AbonoEntity,
+        settings: BusinessSettingsEntity,
+        client: ClientEntity?,
+        logoRaw: Bitmap?,
+    ): Float {
+        val contentWidth = (pageWidth - margin * 2).toInt()
+        val monoRegular = Typeface.MONOSPACE
+        val monoBold = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.BLACK
+            textSize = 6.2f
+            typeface = monoRegular
+        }
+        val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.BLACK
+            textSize = 6.2f
+            typeface = monoBold
+        }
+        val thickLinePaint = Paint().apply {
+            color = Color.BLACK
+            strokeWidth = 1.3f
+        }
+        val dashPaint = Paint().apply {
+            color = Color.DKGRAY
+            strokeWidth = 0.7f
+        }
+
+        val resolvedClientName = abono.clientName.ifBlank { client?.name ?: "Cliente" }
+        val resolvedFolio = abono.abonoFolio.ifBlank { "AB-${abono.id}" }
+        val isSettled = abono.remainingTotalDebtMxn <= 0.0
+        val statusText = when {
+            abono.isCancelled -> "CANCELADO"
+            isSettled -> "CUENTA LIQUIDADA"
+            else -> "ABONO PARCIAL A CRÉDITO"
+        }
+
+        var y = 6f
+        if (logoRaw != null && logoRaw.width > 0 && logoRaw.height > 0) {
+            val maxLogoH = 42f
+            val ratio = minOf(contentWidth.toFloat() / logoRaw.width.toFloat(), maxLogoH / logoRaw.height.toFloat())
+            val targetW = (logoRaw.width * ratio).toInt().coerceAtLeast(24)
+            val targetH = (logoRaw.height * ratio).toInt().coerceAtLeast(20)
+            val scaledLogo = Bitmap.createScaledBitmap(logoRaw, targetW, targetH, true)
+            val logoLeft = margin + (contentWidth - targetW) / 2f
+            canvas.drawBitmap(scaledLogo, logoLeft, y, null)
+            y += targetH + 3f
+        }
+
+        if (settings.address.isNotBlank()) {
+            y = drawWrapped(canvas, settings.address, paint.apply { textSize = 5.6f }, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
+        }
+        if (settings.phone.isNotBlank()) {
+            y = drawWrapped(canvas, "Tel: ${settings.phone}", paint.apply { textSize = 5.6f }, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
+        }
+
+        y += 2f
+        canvas.drawLine(margin, y, pageWidth - margin, y, thickLinePaint)
+        y += 7f
+
+        if (abono.isCancelled) {
+            val cancelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.BLACK
+                textSize = 10f
+                typeface = monoBold
+                textAlign = Paint.Align.CENTER
+            }
+            val boxPaint = Paint().apply {
+                color = Color.BLACK
+                style = Paint.Style.STROKE
+                strokeWidth = 1.3f
+            }
+            canvas.drawRect(margin, y - 7f, pageWidth - margin, y + 6f, boxPaint)
+            canvas.drawText("CANCELADO", pageWidth / 2f, y + 3f, cancelPaint)
+            y += 12f
+        }
+
+        boldPaint.textSize = 6.8f
+        y = drawWrapped(canvas, "COMPROBANTE DE ABONO", boldPaint, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
+        if (abono.salesChannel == SalesChannel.CREMERIA) {
+            boldPaint.textSize = 5.8f
+            y = drawWrapped(canvas, "CREMERÍA DEL PATRÓN", boldPaint, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
+        }
+        boldPaint.textSize = 8.4f
+        y = drawWrapped(canvas, resolvedFolio, boldPaint, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
+        y += 2f
+
+        paint.textSize = 6.0f
+        boldPaint.textSize = 6.0f
+        y = drawRow(canvas, "Fecha:", dateFormatter.format(Date(abono.dateMillis)), margin, pageWidth - margin, paint, boldPaint, y, rowStep = 9f)
+        y = drawRow(canvas, "Hora:", timeFormatter.format(Date(abono.dateMillis)), margin, pageWidth - margin, paint, boldPaint, y, rowStep = 9f)
+        boldPaint.textSize = 5.8f
+        y = drawWrapped(canvas, statusText, boldPaint, margin, y - 2f, contentWidth, Layout.Alignment.ALIGN_CENTER)
+
+        y = drawDashedLine(canvas, margin, pageWidth - margin, y + 2f, dashPaint) + 5f
+
+        boldPaint.textSize = 6.0f
+        y = drawWrapped(canvas, "CLIENTE", boldPaint, margin, y, contentWidth, Layout.Alignment.ALIGN_NORMAL)
+        boldPaint.textSize = 6.8f
+        y = drawWrapped(canvas, resolvedClientName, boldPaint, margin, y - 1f, contentWidth, Layout.Alignment.ALIGN_NORMAL)
+        paint.textSize = 5.6f
+        if (!client?.address.isNullOrBlank()) {
+            y = drawWrapped(canvas, client?.address.orEmpty(), paint, margin, y - 1f, contentWidth, Layout.Alignment.ALIGN_NORMAL)
+        }
+        if (!client?.phone.isNullOrBlank()) {
+            y = drawWrapped(canvas, "Tel: ${client?.phone.orEmpty()}", paint, margin, y - 1f, contentWidth, Layout.Alignment.ALIGN_NORMAL)
+        }
+
+        y = drawDashedLine(canvas, margin, pageWidth - margin, y + 2f, dashPaint) + 5f
+
+        boldPaint.textSize = 6.0f
+        y = drawWrapped(canvas, "DETALLE DEL ABONO", boldPaint, margin, y, contentWidth, Layout.Alignment.ALIGN_NORMAL)
+        paint.textSize = 5.8f
+        y = drawWrapped(canvas, "Nota(s) aplicada(s): ${abono.deliveryFolio}", paint, margin, y, contentWidth, Layout.Alignment.ALIGN_NORMAL)
+        if (abono.note.isNotBlank()) {
+            y = drawWrapped(canvas, "Observación: ${abono.note}", paint, margin, y, contentWidth, Layout.Alignment.ALIGN_NORMAL)
+        }
+
+        y += 2f
+        canvas.drawLine(margin, y, pageWidth - margin, y, thickLinePaint)
+        y += 9f
+
+        boldPaint.textSize = 6.0f
+        y = drawRow(
+            canvas,
+            "Adeudo anterior:",
+            "${CalculationEngine.formatMoney(abono.previousTotalDebtMxn)} MXN",
+            margin,
+            pageWidth - margin,
+            paint,
+            boldPaint,
+            y,
+            rowStep = 9.5f,
         )
-        picture.endRecording()
-        return measured
+        y = drawRow(
+            canvas,
+            "Abono realizado:",
+            "-${CalculationEngine.formatMoney(abono.amountMxn)} MXN",
+            margin,
+            pageWidth - margin,
+            boldPaint,
+            boldPaint,
+            y,
+            rowStep = 9.5f,
+        )
+
+        y += 1f
+        val barTop = y
+        val barBottom = y + 14f
+        val fillBlack = Paint().apply {
+            color = Color.BLACK
+            style = Paint.Style.FILL
+        }
+        val whiteBold = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = 6.4f
+            typeface = monoBold
+        }
+        canvas.drawRect(RectF(margin, barTop, pageWidth - margin, barBottom), fillBlack)
+        drawRow(
+            canvas,
+            if (isSettled) "SALDO LIQUIDADO" else "ADEUDO ACTUAL",
+            "${CalculationEngine.formatMoney(abono.remainingTotalDebtMxn)} MXN",
+            margin + 4f,
+            pageWidth - margin - 4f,
+            whiteBold,
+            whiteBold,
+            barTop + 9.5f,
+            rowStep = 9f,
+        )
+        y = barBottom + 5f
+
+        boldPaint.textSize = 5.6f
+        y = drawWrapped(
+            canvas,
+            "Abonó: ${CalculationEngine.amountInWordsMxn(abono.amountMxn)}",
+            boldPaint,
+            margin,
+            y,
+            contentWidth,
+            Layout.Alignment.ALIGN_NORMAL,
+        )
+
+        y = drawDashedLine(canvas, margin, pageWidth - margin, y + 3f, dashPaint) + 5f
+        boldPaint.textSize = 6.4f
+        y = drawWrapped(canvas, "¡Gracias por su pago!", boldPaint, margin, y, contentWidth, Layout.Alignment.ALIGN_CENTER)
+        paint.textSize = 5.6f
+        y = drawWrapped(canvas, "Comprobante de abono parcial", paint, margin, y - 1f, contentWidth, Layout.Alignment.ALIGN_CENTER)
+        return y + 6f
     }
 
     private fun drawDashedLine(

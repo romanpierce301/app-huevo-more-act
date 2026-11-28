@@ -459,6 +459,301 @@ private fun ClientFormDialog(
 }
 
 @Composable
+fun AbonosScreen(
+    clients: List<ClientWithDebt>,
+    deliveries: List<DeliveryEntity>,
+    activeAbonos: List<AbonoEntity>,
+    onOpenDrawer: () -> Unit,
+    onRecordAbono: (clientId: Long, deliveryId: Long?, amount: String, note: String, onDone: (Long) -> Unit) -> Unit,
+    onOpenAbonoTicket: (Long) -> Unit,
+) {
+    var searchQuery by remember { mutableStateOf("") }
+    var tabIndex by remember { mutableIntStateOf(0) } // 0 = Clientes con adeudo, 1 = Historial de abonos
+    var selectedClientForAbono by remember { mutableStateOf<ClientWithDebt?>(null) }
+
+    val clientsWithPending = remember(clients) {
+        clients.filter { it.activeDebtMxn > 0.0 }
+            .sortedByDescending { it.activeDebtMxn }
+    }
+    val filteredClients = remember(clientsWithPending, searchQuery) {
+        val q = searchQuery.trim().lowercase(Locale.getDefault())
+        if (q.isEmpty()) clientsWithPending
+        else clientsWithPending.filter { c ->
+            c.client.name.lowercase(Locale.getDefault()).contains(q) ||
+                c.client.phone.lowercase(Locale.getDefault()).contains(q) ||
+                c.client.address.lowercase(Locale.getDefault()).contains(q)
+        }
+    }
+    val clientNameMap = remember(clients) {
+        clients.associate { it.client.id to it.client.name }
+    }
+    val filteredAbonos = remember(activeAbonos, searchQuery, clientNameMap) {
+        val q = searchQuery.trim().lowercase(Locale.getDefault())
+        if (q.isEmpty()) activeAbonos
+        else activeAbonos.filter { ab ->
+            val resolvedName = ab.clientName.ifBlank { clientNameMap[ab.clientId].orEmpty() }
+            resolvedName.lowercase(Locale.getDefault()).contains(q) ||
+                ab.abonoFolio.lowercase(Locale.getDefault()).contains(q) ||
+                ab.deliveryFolio.lowercase(Locale.getDefault()).contains(q)
+        }
+    }
+    val totalReceivable = remember(clientsWithPending) {
+        clientsWithPending.fold(BigDecimal.ZERO) { acc, c -> acc.add(BigDecimal.valueOf(c.activeDebtMxn)) }
+    }
+    val dateFmt = remember { SimpleDateFormat("dd/MM/yyyy HH:mm", Locale("es", "MX")) }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        AuroraTopBar(
+            title = "Abonos a Crédito",
+            subtitle = "${clientsWithPending.size} clientes con adeudo • Pagos sin entrega",
+            showDrawerMenu = true,
+            onMenuOrBackClick = onOpenDrawer,
+        )
+
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            item {
+                AuroraCard(contentPadding = PaddingValues(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column {
+                            Text(
+                                text = "ADEUDO TOTAL POR COBRAR",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = OnSurfaceVariant,
+                            )
+                            Text(
+                                text = "${CalculationEngine.formatMoney(totalReceivable)} MXN",
+                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                                color = if (totalReceivable > BigDecimal.ZERO) Secondary else PrimaryGlow,
+                            )
+                        }
+                        AuroraStatusBadge(
+                            text = "${clientsWithPending.size} con saldo",
+                            tint = if (clientsWithPending.isNotEmpty()) Secondary else PrimaryGlow,
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "Registra pagos parciales independientes sin generar una entrega nueva y emite su ticket de abono.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = OnSurfaceVariant,
+                    )
+                }
+            }
+
+            item {
+                AuroraTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    label = "Buscar cliente o folio de abono",
+                    leadingIcon = Icons.Default.Search,
+                    testTag = "search_abonos_input",
+                    modifier = Modifier.widthIn(max = 600.dp),
+                )
+            }
+
+            item {
+                LazyRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(max = 600.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val tabs = listOf(
+                        "Por Cobrar (${clientsWithPending.size})",
+                        "Historial de Abonos (${activeAbonos.size})",
+                    )
+                    items(tabs.size) { idx ->
+                        FilterChip(
+                            selected = tabIndex == idx,
+                            onClick = { tabIndex = idx },
+                            label = { Text(tabs[idx]) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Primary.copy(alpha = 0.22f),
+                                selectedLabelColor = Primary,
+                                containerColor = SurfaceContainerLow,
+                                labelColor = OnSurfaceVariant,
+                            ),
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("abonos_tab_$idx"),
+                        )
+                    }
+                }
+            }
+
+            if (tabIndex == 0) {
+                if (filteredClients.isEmpty()) {
+                    item {
+                        AuroraEmptyState(
+                            icon = Icons.Default.Payments,
+                            title = if (clientsWithPending.isEmpty()) "Sin clientes con adeudo" else "Sin resultados",
+                            subtitle = if (clientsWithPending.isEmpty()) {
+                                "Cuando registres entregas a crédito con saldo pendiente aparecerán aquí para recibir abonos parciales."
+                            } else {
+                                "Intenta buscar con otro nombre, dirección o teléfono."
+                            },
+                        )
+                    }
+                } else {
+                    items(filteredClients, key = { "debt_client_${it.client.id}" }) { item ->
+                        val pendingNotesCount = deliveries.count {
+                            it.clientId == item.client.id && it.status == "ACTIVA" && it.pendingBalanceMxn > 0.0
+                        }
+                        AuroraCard(modifier = Modifier.testTag("abono_debt_client_card_${item.client.id}")) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = item.client.name,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = OnSurface,
+                                    )
+                                    Text(
+                                        text = "$pendingNotesCount nota(s) pendiente(s)" +
+                                            if (item.client.phone.isNotBlank()) " • ${item.client.phone}" else "",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = OnSurfaceVariant,
+                                    )
+                                }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(
+                                        text = "ADEUDO TOTAL",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = OnSurfaceVariant,
+                                    )
+                                    Text(
+                                        text = "${CalculationEngine.formatMoney(item.activeDebtMxn)} MXN",
+                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = Secondary,
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            AuroraPrimaryButton(
+                                text = "Registrar Abono Parcial",
+                                icon = Icons.Default.Payments,
+                                onClick = { selectedClientForAbono = item },
+                                testTag = "abono_client_button_${item.client.id}",
+                            )
+                        }
+                    }
+                }
+            } else {
+                if (filteredAbonos.isEmpty()) {
+                    item {
+                        AuroraEmptyState(
+                            icon = Icons.Default.Receipt,
+                            title = if (activeAbonos.isEmpty()) "Aún no hay abonos registrados" else "Sin coincidencias",
+                            subtitle = if (activeAbonos.isEmpty()) {
+                                "Los comprobantes de abono aparecerán aquí para imprimir o compartir."
+                            } else {
+                                "Prueba con otro folio o nombre de cliente."
+                            },
+                        )
+                    }
+                } else {
+                    items(filteredAbonos, key = { "ab_hist_${it.id}" }) { ab ->
+                        val resolvedName = ab.clientName.ifBlank { clientNameMap[ab.clientId] ?: "Cliente" }
+                        val folioLabel = ab.abonoFolio.ifBlank { "AB-${ab.id}" }
+                        AuroraCard(
+                            onClick = { onOpenAbonoTicket(ab.id) },
+                            modifier = Modifier.testTag("abono_history_card_${ab.id}"),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = folioLabel,
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = Primary,
+                                )
+                                Text(
+                                    text = "-${CalculationEngine.formatMoney(ab.amountMxn)} MXN",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = PrimaryGlow,
+                                )
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = resolvedName,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = OnSurface,
+                            )
+                            Text(
+                                text = "Nota(s): ${ab.deliveryFolio} • ${dateFmt.format(Date(ab.dateMillis))}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = OnSurfaceVariant,
+                            )
+                            if (ab.note.isNotBlank()) {
+                                Text(
+                                    text = "Obs: ${ab.note}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = OnSurfaceVariant,
+                                )
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                AuroraStatusBadge(
+                                    text = if (ab.remainingTotalDebtMxn <= 0.0) {
+                                        "Liquidado ($0.00 MXN)"
+                                    } else {
+                                        "Adeudo tras abono: ${CalculationEngine.formatMoney(ab.remainingTotalDebtMxn)} MXN"
+                                    },
+                                    tint = if (ab.remainingTotalDebtMxn <= 0.0) PrimaryGlow else Secondary,
+                                )
+                                Text(
+                                    text = "Ver Ticket →",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = Primary,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    selectedClientForAbono?.let { target ->
+        val clientPendingDeliveries = deliveries.filter {
+            it.clientId == target.client.id && it.status == "ACTIVA" && it.pendingBalanceMxn > 0.0
+        }.sortedWith(compareBy<DeliveryEntity> { it.dateMillis }.thenBy { it.id })
+
+        if (clientPendingDeliveries.isNotEmpty()) {
+            AbonoDialog(
+                clientName = target.client.name,
+                deliveries = clientPendingDeliveries,
+                onDismiss = { selectedClientForAbono = null },
+                onConfirm = { deliveryId, amountText, note ->
+                    onRecordAbono(target.client.id, deliveryId, amountText, note) { abonoId ->
+                        selectedClientForAbono = null
+                        onOpenAbonoTicket(abonoId)
+                    }
+                },
+            )
+        }
+    }
+}
+
+@Composable
 fun PerfilClienteScreen(
     client: ClientEntity?,
     deliveries: List<DeliveryEntity>,
@@ -466,8 +761,9 @@ fun PerfilClienteScreen(
     settings: BusinessSettingsEntity,
     onBack: () -> Unit,
     onStartNewDeliveryForClient: (Long) -> Unit,
-    onRecordAbono: (clientId: Long, deliveryId: Long, amount: String, note: String, onDone: () -> Unit) -> Unit,
+    onRecordAbono: (clientId: Long, deliveryId: Long?, amount: String, note: String, onDone: (Long) -> Unit) -> Unit,
     onOpenTicket: (Long) -> Unit,
+    onOpenAbonoTicket: (Long) -> Unit = {},
 ) {
     if (client == null) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -653,14 +949,19 @@ fun PerfilClienteScreen(
                 }
             } else {
                 items(abonos, key = { "abono_${it.id}" }) { ab ->
-                    AuroraCard(contentPadding = PaddingValues(14.dp)) {
+                    val folioTitle = ab.abonoFolio.ifBlank { "AB-${ab.id}" }
+                    AuroraCard(
+                        onClick = { onOpenAbonoTicket(ab.id) },
+                        contentPadding = PaddingValues(14.dp),
+                        modifier = Modifier.testTag("profile_abono_card_${ab.id}"),
+                    ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "Abono a ${ab.deliveryFolio}",
+                                    text = "$folioTitle • Nota(s): ${ab.deliveryFolio}",
                                     style = MaterialTheme.typography.titleSmall,
                                     color = OnSurface,
                                 )
@@ -670,12 +971,26 @@ fun PerfilClienteScreen(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = OnSurfaceVariant,
                                 )
+                                if (ab.previousTotalDebtMxn > 0.0 || ab.remainingTotalDebtMxn > 0.0) {
+                                    Text(
+                                        text = "Saldo tras abono: ${CalculationEngine.formatMoney(ab.remainingTotalDebtMxn)} MXN",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Secondary,
+                                    )
+                                }
                             }
-                            Text(
-                                text = "-${CalculationEngine.formatMoney(ab.amountMxn)} MXN",
-                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                color = PrimaryGlow,
-                            )
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text(
+                                    text = "-${CalculationEngine.formatMoney(ab.amountMxn)} MXN",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = PrimaryGlow,
+                                )
+                                Text(
+                                    text = "Ver Ticket →",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Primary,
+                                )
+                            }
                         }
                     }
                 }
@@ -757,11 +1072,13 @@ fun PerfilClienteScreen(
 
     if (showAbonoDialog && activeDeliveriesWithDebt.isNotEmpty()) {
         AbonoDialog(
-            deliveries = activeDeliveriesWithDebt,
+            clientName = client.name,
+            deliveries = activeDeliveriesWithDebt.sortedWith(compareBy<DeliveryEntity> { it.dateMillis }.thenBy { it.id }),
             onDismiss = { showAbonoDialog = false },
             onConfirm = { deliveryId, amountText, note ->
-                onRecordAbono(client.id, deliveryId, amountText, note) {
+                onRecordAbono(client.id, deliveryId, amountText, note) { abonoId ->
                     showAbonoDialog = false
+                    onOpenAbonoTicket(abonoId)
                 }
             },
         )
@@ -772,74 +1089,201 @@ fun PerfilClienteScreen(
 private fun Int.spWithFallback() = androidx.compose.ui.unit.TextUnit(this.toFloat(), androidx.compose.ui.unit.TextUnitType.Sp)
 
 @Composable
-private fun AbonoDialog(
+fun AbonoDialog(
+    clientName: String,
     deliveries: List<DeliveryEntity>,
     onDismiss: () -> Unit,
-    onConfirm: (deliveryId: Long, amountText: String, note: String) -> Unit,
+    onConfirm: (deliveryId: Long?, amountText: String, note: String) -> Unit,
 ) {
+    val totalPendingDebt = remember(deliveries) {
+        deliveries.fold(BigDecimal.ZERO) { acc, d -> acc.add(BigDecimal.valueOf(d.pendingBalanceMxn)) }
+            .setScale(2, java.math.RoundingMode.HALF_UP)
+    }
+    var applyToTotal by remember { mutableStateOf(true) }
     var selectedDeliveryId by remember { mutableStateOf(deliveries.first().id) }
     var amountText by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
+
     val selectedDelivery = deliveries.firstOrNull { it.id == selectedDeliveryId } ?: deliveries.first()
+    val maxApplicable = if (applyToTotal) {
+        totalPendingDebt
+    } else {
+        BigDecimal.valueOf(selectedDelivery.pendingBalanceMxn).setScale(2, java.math.RoundingMode.HALF_UP)
+    }
+    val enteredAmount = remember(amountText) {
+        amountText.trim().replace(",", ".").toBigDecimalOrNull()
+            ?.setScale(2, java.math.RoundingMode.HALF_UP)
+            ?: BigDecimal.ZERO
+    }
+    val exceedsLimit = enteredAmount > maxApplicable
+    val projectedRemainingTotal = totalPendingDebt
+        .subtract(enteredAmount.coerceAtLeast(BigDecimal.ZERO))
+        .coerceAtLeast(BigDecimal.ZERO)
 
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = SurfaceContainer,
-        title = { Text("Registrar Abono", color = OnSurface) },
+        title = {
+            Column {
+                Text("Registrar Abono Parcial", color = OnSurface)
+                Text(
+                    text = clientName,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Primary,
+                )
+            }
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "Selecciona la nota a abonar:",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = OnSurfaceVariant,
-                )
-                deliveries.forEach { d ->
-                    val selected = d.id == selectedDelivery.id
-                    Surface(
-                        onClick = { selectedDeliveryId = d.id },
-                        shape = RoundedCornerShape(12.dp),
-                        color = if (selected) Primary.copy(alpha = 0.16f) else SurfaceContainerLow,
-                        border = BorderStroke(1.dp, if (selected) Primary else OnSurfaceVariant.copy(alpha = 0.2f)),
-                        modifier = Modifier.fillMaxWidth(),
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = SurfaceContainerLow,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Row(
-                            modifier = Modifier.padding(10.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                        Text(
+                            text = "Adeudo total actual:",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = OnSurfaceVariant,
+                        )
+                        Text(
+                            text = "${CalculationEngine.formatMoney(totalPendingDebt)} MXN",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = Secondary,
+                        )
+                    }
+                }
+
+                if (deliveries.size > 1) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        FilterChip(
+                            selected = applyToTotal,
+                            onClick = { applyToTotal = true },
+                            label = { Text("Adeudo total") },
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp)
+                                .testTag("abono_mode_total"),
+                        )
+                        FilterChip(
+                            selected = !applyToTotal,
+                            onClick = { applyToTotal = false },
+                            label = { Text("Una nota") },
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp)
+                                .testTag("abono_mode_note"),
+                        )
+                    }
+                }
+
+                if (!applyToTotal && deliveries.size > 1) {
+                    Text(
+                        text = "Selecciona la nota a abonar:",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = OnSurfaceVariant,
+                    )
+                    deliveries.forEach { d ->
+                        val selected = d.id == selectedDelivery.id
+                        Surface(
+                            onClick = { selectedDeliveryId = d.id },
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (selected) Primary.copy(alpha = 0.16f) else SurfaceContainerLow,
+                            border = BorderStroke(1.dp, if (selected) Primary else OnSurfaceVariant.copy(alpha = 0.2f)),
+                            modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Text(d.folio, color = OnSurface, style = MaterialTheme.typography.labelLarge)
-                            Text(
-                                "${CalculationEngine.formatMoney(d.pendingBalanceMxn)} MXN",
-                                color = Secondary,
-                                style = MaterialTheme.typography.labelLarge,
-                            )
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text(d.folio, color = OnSurface, style = MaterialTheme.typography.labelLarge)
+                                Text(
+                                    "${CalculationEngine.formatMoney(d.pendingBalanceMxn)} MXN",
+                                    color = Secondary,
+                                    style = MaterialTheme.typography.labelLarge,
+                                )
+                            }
                         }
                     }
                 }
+
                 AuroraTextField(
                     value = amountText,
                     onValueChange = { amountText = it },
                     label = "Monto del abono (MXN)",
-                    placeholder = "Máximo: ${CalculationEngine.formatMoney(selectedDelivery.pendingBalanceMxn)}",
+                    placeholder = "Máximo: ${CalculationEngine.formatMoney(maxApplicable)}",
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     testTag = "abono_amount_input",
                 )
                 AuroraTextField(
                     value = note,
                     onValueChange = { note = it },
-                    label = "Nota (opcional)",
+                    label = "Nota o forma de pago (opcional)",
                     testTag = "abono_note_input",
                 )
+
+                if (enteredAmount > BigDecimal.ZERO) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (exceedsLimit) Error.copy(alpha = 0.14f) else Primary.copy(alpha = 0.10f),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            if (exceedsLimit) {
+                                Text(
+                                    text = "El abono supera el saldo aplicable (${CalculationEngine.formatMoney(maxApplicable)} MXN).",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Error,
+                                )
+                            } else {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Text(
+                                        text = "Adeudo total restante:",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = OnSurfaceVariant,
+                                    )
+                                    Text(
+                                        text = if (projectedRemainingTotal <= BigDecimal.ZERO) {
+                                            "LIQUIDADO ($0.00 MXN)"
+                                        } else {
+                                            "${CalculationEngine.formatMoney(projectedRemainingTotal)} MXN"
+                                        },
+                                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                        color = if (projectedRemainingTotal <= BigDecimal.ZERO) PrimaryGlow else Secondary,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
             Button(
-                onClick = { onConfirm(selectedDelivery.id, amountText, note) },
+                onClick = {
+                    onConfirm(
+                        if (applyToTotal) null else selectedDelivery.id,
+                        amountText,
+                        note,
+                    )
+                },
+                enabled = enteredAmount > BigDecimal.ZERO && !exceedsLimit,
                 colors = ButtonDefaults.buttonColors(containerColor = Primary, contentColor = OnPrimary),
                 modifier = Modifier
                     .heightIn(min = 48.dp)
                     .testTag("confirm_abono_button"),
             ) {
-                Text("Aplicar Abono")
+                Text("Registrar y Ver Ticket")
             }
         },
         dismissButton = {

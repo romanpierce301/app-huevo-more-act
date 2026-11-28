@@ -33,7 +33,7 @@ import com.example.data.local.entity.SugarPurchaseEntity
         SugarPurchaseEntity::class,
         SugarInventoryEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = false,
 )
 abstract class HyhDatabase : RoomDatabase() {
@@ -134,13 +134,32 @@ abstract class HyhDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE business_settings ADD COLUMN ticketVariant INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE business_settings ADD COLUMN nextAbonoSequence INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE abonos ADD COLUMN abonoFolio TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE abonos ADD COLUMN clientName TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE abonos ADD COLUMN previousTotalDebtMxn REAL NOT NULL DEFAULT 0.0")
+                db.execSQL("ALTER TABLE abonos ADD COLUMN remainingTotalDebtMxn REAL NOT NULL DEFAULT 0.0")
+            }
+        }
+
         fun getInstance(context: Context): HyhDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     HyhDatabase::class.java,
                     "hyh_huevos_local.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7).build().also { INSTANCE = it }
+                ).addMigrations(
+                    MIGRATION_1_2,
+                    MIGRATION_2_3,
+                    MIGRATION_3_4,
+                    MIGRATION_4_5,
+                    MIGRATION_5_6,
+                    MIGRATION_6_7,
+                    MIGRATION_7_8,
+                ).build().also { INSTANCE = it }
             }
         }
     }

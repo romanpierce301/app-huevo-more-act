@@ -186,3 +186,21 @@ dependencies {
   "ksp"(libs.androidx.room.compiler)
   // "ksp"(libs.moshi.kotlin.codegen)
 }
+
+val syncStandardDebugApk = tasks.register<Copy>("syncStandardDebugApk") {
+  dependsOn("packageHyhhuevosDebug")
+  from(layout.buildDirectory.file("outputs/apk/hyhhuevos/debug/app-hyhhuevos-debug.apk"))
+  into(layout.buildDirectory.dir("outputs/apk/debug"))
+  rename { "app-debug.apk" }
+}
+
+val syncPreviewDebugApk = tasks.register<Copy>("syncPreviewDebugApk") {
+  dependsOn("packageHyhhuevosDebug")
+  from(layout.buildDirectory.file("outputs/apk/hyhhuevos/debug/app-hyhhuevos-debug.apk"))
+  into(rootProject.layout.projectDirectory.dir(".build-outputs"))
+  rename { "app-debug.apk" }
+}
+
+tasks.matching { it.name == "assembleHyhhuevosDebug" || it.name == "assembleDebug" }.configureEach {
+  finalizedBy(syncStandardDebugApk, syncPreviewDebugApk)
+}

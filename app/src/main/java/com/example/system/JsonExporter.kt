@@ -203,6 +203,10 @@ object JsonExporter {
                         put("note", a.note)
                         put("isCancelled", a.isCancelled)
                         put("salesChannel", a.salesChannel)
+                        put("abonoFolio", a.abonoFolio)
+                        put("clientName", a.clientName)
+                        put("previousTotalDebtMxn", a.previousTotalDebtMxn)
+                        put("remainingTotalDebtMxn", a.remainingTotalDebtMxn)
                     },
                 )
             }
@@ -269,6 +273,7 @@ object JsonExporter {
             put("creditLegendExtra", settings.creditLegendExtra)
             put("creditLegendClosing", settings.creditLegendClosing)
             put("ticketVariant", settings.ticketVariant)
+            put("nextAbonoSequence", settings.nextAbonoSequence)
         }
 
         val sugarPurchasesArr = JSONArray().apply {

@@ -272,6 +272,7 @@ fun ConfiguracionScreen(
     onPrinterPermissionDenied: () -> Unit,
     isScanningPrinters: Boolean,
     onSelectPrinterType: (String) -> Unit,
+    onSelectTicketVariant: (Int) -> Unit = {},
     onSelectPrinter: (PairedPrinterDevice) -> Unit,
     onTestPrinter: () -> Unit,
 ) {
@@ -563,6 +564,38 @@ fun ConfiguracionScreen(
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                    HorizontalDivider(color = Primary.copy(alpha = 0.14f))
+                    Spacer(Modifier.height(10.dp))
+                    val activeVariant = com.example.domain.TicketPrintVariant.fromId(settings.ticketVariant)
+                    Text(
+                        text = "Formato de Ticket (${activeVariant.title})",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = OnSurface,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = activeVariant.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = OnSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    androidx.compose.foundation.lazy.LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        items(com.example.domain.TicketPrintVariant.entries.size) { idx ->
+                            val variant = com.example.domain.TicketPrintVariant.entries[idx]
+                            val selected = variant.id == activeVariant.id
+                            androidx.compose.material3.FilterChip(
+                                selected = selected,
+                                onClick = { onSelectTicketVariant(variant.id) },
+                                label = { Text(variant.shortTitle) },
+                                modifier = Modifier.heightIn(min = 48.dp),
+                            )
                         }
                     }
                 }
